@@ -15,7 +15,7 @@ let spec ~base (packages : Compile.t list) =
        [
          run ~network "opam pin -ny odoc %s && opam depext -iy odoc" Config.odoc;
          workdir "/home/opam/docs/";
-         run "sudo chown opam:opam . ";
+         run "sudo chown opam:opam .     ";
          Misc.rsync_pull [ Fpath.v "compile" ];
          run "find . -type d";
          run "%s" @@ Fmt.to_to_string Mld.Gen.pp_gen_files_commands mld;

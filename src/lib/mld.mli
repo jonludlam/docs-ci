@@ -16,7 +16,7 @@ type 'a t = { file : Fpath.t; target : Fpath.t option; name : name; kind : 'a ki
 type ('a, 'b) command
 
 
-val v : ?children: mld t list -> ?parent: 'a t -> 'b t -> ('a, 'b) command
+val v : ?children: mld t list -> ?parent: 'a t -> 'b t -> bool -> ('a, 'b) command
 
 val pp_compile_command : _ command Fmt.t
 

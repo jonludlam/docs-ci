@@ -1,7 +1,6 @@
 type name = string
 
-let name_of_string =
-  Astring.String.map (function x when Astring.Char.Ascii.is_alphanum x -> x | _ -> '_')
+let name_of_string x = x
 
 type mld = Mld
 
@@ -19,33 +18,36 @@ type 'a t = {
   kind : 'a kind;
 }
 
-let odoc_name : type a. a t -> string =
- fun t -> match t.kind with Mld -> "page-" ^ t.name | CU -> "module-" ^ t.name
+let odoc_reference : type a. a t -> string =
+ fun t -> match t.kind with Mld -> "page-\\\"" ^ t.name ^ "\\\"" | CU -> "module-" ^ t.name
+
+let odoc_filename : type a. a t -> string =
+  fun t -> match t.kind with Mld -> "page-" ^ t.name | CU -> t.name
 
 let include_path t =
   match t.target with None -> Fpath.split_base t.file |> fst | Some target -> target
 
 let odoc_file t =
   match t.target with
-  | None -> Fpath.((split_base t.file |> fst) / (odoc_name t ^ ".odoc"))
-  | Some target -> Fpath.(target / (odoc_name t ^ ".odoc"))
+  | None -> Fpath.((split_base t.file |> fst) / (odoc_filename t ^ ".odoc"))
+  | Some target -> Fpath.(target / (odoc_filename t ^ ".odoc"))
 
 let odocl_file t =
   match t.target with
-  | None -> Fpath.((split_base t.file |> fst) / (odoc_name t ^ ".odocl"))
-  | Some target -> Fpath.(target / (odoc_name t ^ ".odocl"))
+  | None -> Fpath.((split_base t.file |> fst) / (odoc_filename t ^ ".odocl"))
+  | Some target -> Fpath.(target / (odoc_filename t ^ ".odocl"))
 
 let child_pp f dep =
   let Mld = dep.kind in
-  Fmt.pf f "--child %s" (odoc_name dep)
+  Fmt.pf f "--child %s" (odoc_reference dep)
 
-type ('a, 'b) command = { children : mld t list; parent : 'a t option; target : 'b t }
+type ('a, 'b) command = { children : mld t list; parent : 'a t option; target : 'b t; skip : bool }
 
-let v ?(children = []) ?parent target = { children; parent; target }
+let v ?(children = []) ?parent target skip = { children; parent; target; skip }
 
-let pp_compile_command f { children; parent; target } =
+let pp_compile_command f { children; parent; target; skip } =
   let parent_pp f parent =
-    Fmt.pf f "--parent %s -I %a" (odoc_name parent) Fpath.pp (include_path parent)
+    Fmt.pf f "--parent %s -I %a" (odoc_reference parent) Fpath.pp (include_path parent)
   in
   let command =
     Fmt.str "odoc compile --warn-error %a %a %a %a" Fpath.pp target.file
@@ -56,16 +58,20 @@ let pp_compile_command f { children; parent; target } =
       Fmt.(list ~sep:(any " ") child_pp)
       children
   in
-  Fmt.pf f "(echo \"%s\" && %s) || exit 1" command command
+  if skip
+  then Fmt.pf f "echo skipping"
+  else Fmt.pf f "(echo \"%s\" && %s) || exit 1" command command
 
-let pp_link_command f { children; target; _ } =
+let pp_link_command f { children; target; skip; _ } =
   let include_pp f parent = Fmt.pf f "-I %a" Fpath.pp (include_path parent) in
   let command =
     Fmt.str "odoc link --warn-error %a %a" Fpath.pp (odoc_file target)
       Fmt.(list ~sep:(any " ") include_pp)
       children
   in
-  Fmt.pf f "(echo \"%s\" && %s) || exit 1" command command
+  if skip
+  then Fmt.pf f "echo skipping"
+  else Fmt.pf f "(echo \"%s\" && %s) || exit 1" command command
 
 let pp_html_command ?output () f t =
   Fmt.pf f "odoc html %a %a" Fpath.pp (odocl_file t) Fmt.(option (any "-o " ++ Fpath.pp)) output
@@ -85,7 +91,7 @@ module Gen = struct
   let pp_link : type a. Format.formatter -> a odoc -> unit =
    fun f v ->
     match v.kind with
-    | Mld -> Fmt.pf f "{!childpage:%s}" v.name
+    | Mld -> Fmt.pf f "{!childpage:\"%s\"}" v.name
     | CU -> Fmt.pf f "{!childmodule:%s}" v.name
 
   let pp_link_dyn f = function Mld odoc -> pp_link f odoc | CU odoc -> pp_link f odoc
@@ -145,7 +151,7 @@ module Gen = struct
     }
 
   let universes_odoc =
-    { file = Fpath.(v "compile" / "universes.mld"); target = None; name = "universes"; kind = Mld }
+    { file = Fpath.(v "compile" / "universes.mld"); target = None; name = "universes"; kind = Mld; }
 
   let universe_odoc hash =
     {
@@ -179,6 +185,7 @@ module Gen = struct
         children = t.universes |> StringMap.bindings |> List.map fst |> List.map universe_odoc;
         parent = None;
         target = universes_odoc;
+        skip=false
       }
     in
     { content; odoc; compilation }
@@ -210,7 +217,7 @@ module Gen = struct
         (packages |> Package.Map.bindings)
     in
     let odoc = universe_odoc hash in
-    let compilation = { children = []; parent = Some universes_odoc; target = odoc } in
+    let compilation = { children = []; parent = Some universes_odoc; target = odoc; skip=false } in
     { content; odoc; compilation }
 
   let packages t =
@@ -246,6 +253,7 @@ module Gen = struct
         children = t.packages |> OpamPackage.Name.Map.keys |> List.map package_odoc;
         parent = None;
         target = odoc;
+        skip = false;
       }
     in
     { content; odoc; compilation }
@@ -264,6 +272,7 @@ module Gen = struct
         children = (match odoc_entry with Mld file -> [ file ] | _ -> []);
         parent = Some (package_odoc name);
         target = odoc;
+        skip = true;
       }
     in
     { content; odoc; compilation }
@@ -288,7 +297,7 @@ module Gen = struct
         children
     in
     let odoc = package_odoc name in
-    let compilation = { children; parent = Some packages_odoc; target = odoc } in
+    let compilation = { children; parent = Some packages_odoc; target = odoc; skip = false } in
     ({ content; odoc; compilation }, OpamPackage.Version.Map.values package_versions_pages)
 
   let pp_gen_files_commands f t =

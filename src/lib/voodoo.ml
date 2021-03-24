@@ -32,16 +32,18 @@ let spec ~base ~prep ~link =
   let pkgs, pins, cps =
     if prep then
       ( [ "voodoo-prep" ],
-        [ run ~network ~cache "opam pin add -ny git://github.com/jonludlam/voodoo-prep" ],
+        [ run "echo boom";
+          run ~network ~cache "opam pin add -ny git://github.com/jonludlam/voodoo-prep" ],
         [ run "cp $(opam config var bin)/voodoo_prep /home/opam" ] )
     else ([], [], [])
   in
   let pkgs, pins, cps =
     if link then
       ( "voodoo" :: "voodoo_lib" :: pkgs,
-        run ~network ~cache "opam pin add -ny https://github.com/TheLortex/voodoo.git#main   "
+        run "echo boom6 " ::
+        run ~network ~cache "opam pin add -ny https://github.com/jonludlam/voodoo.git#main   "
         :: pins,
-        run "cp $(opam config var bin)/voodoo-link /home/opam" :: cps )
+        run "cp $(opam config var bin)/voodoo-do /home/opam" :: cps )
     else (pkgs, pins, cps)
   in
 
@@ -50,14 +52,14 @@ let spec ~base ~prep ~link =
        ( [
            run ~network "sudo apt-get update && sudo apt-get install -yy m4";
            (* Enable binary cache *)
-           run ~network
+           (* run ~network
              "curl https://raw.githubusercontent.com/ocaml/opam/2.0.8/shell/opam-bin-cache.sh -O \
               && chmod +x opam-bin-cache.sh && mv opam-bin-cache.sh \
               /home/opam/.opam/opam-init/hooks/";
-           run "cat /home/opam/.opam/config";
+           run "cat /home/opam/.opam/config"; *)
            (*  run "for i in {1..3}; do sed -i '$d' /home/opam/.opam/config; done; ";*)
-           run "echo '%s' >> /home/opam/.opam/config" build_cache_config;
-           run "cat /home/opam/.opam/config";
+           (* run "echo '%s' >> /home/opam/.opam/config" build_cache_config; *)
+           (* run "cat /home/opam/.opam/config"; *)
            (* Update opam *)
            env "OPAMPRECISETRACKING" "1";
            (* NOTE: See https://github.com/ocaml/opam/issues/3997 *)

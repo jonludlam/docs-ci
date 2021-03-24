@@ -51,10 +51,11 @@ let spec ~base (packages : Package.t list) =
            run "opam repo remove default  && opam repo add opam /src";
            run ~network ~cache "sudo apt update && opam depext -viy %s" packages_str;
            run "sudo mkdir /prep && sudo chown opam:opam /prep";
+
          ]
        @ List.map make_base_folder packages (* empty preps should yield an empty folder *)
        @ List.map prep_rule packages (* Perform the prep step for all packages *)
-       @ [
+       @ [ run "echo ...";
            run ~secrets:Config.ssh_secrets ~network:Voodoo.network "rsync -avz /prep %s:%s/"
              Config.ssh_host Config.storage_folder;
          ] )
