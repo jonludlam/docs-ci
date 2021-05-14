@@ -190,8 +190,9 @@ let v ~config ~api ~opam () =
       compiled;
     !status |> Package.Map.bindings
   in
-  package_status
-  |> Current.list_map
+  let status =
+    package_status
+    |> Current.list_map
        ( module struct
          type t = Package.t * Web.Status.t
 
@@ -204,5 +205,23 @@ let v ~config ~api ~opam () =
          let package = Current.map fst pkg_value in
          let status = Current.map snd pkg_value in
          Web.set_package_status ~package ~status api)
-  |> Current.collapse ~key:"status-update" ~value:"" ~input:package_status
-  |> Current.pair package_registry
+    |> Current.collapse ~key:"status-update" ~value:"" ~input:package_status
+  in
+  let status2 =
+    let+ status = package_status in
+    let package_versions = Hashtbl.create 1000 in
+    List.iter (fun (package, status) ->
+      let name = Package.opam package |> OpamPackage.name_to_string in
+      let version = Package.opam package |> OpamPackage.version_to_string in
+      match Hashtbl.find_opt package_versions name with
+      | Some vs ->
+        Hashtbl.replace package_versions name ((version, status)::vs)
+      | None ->
+        Hashtbl.add package_versions name [(version, status)]) status;
+    let vs =
+      Hashtbl.fold (fun k v acc -> (Indexes.v ssh k v) :: acc) package_versions []
+    in
+    Current.all vs
+  in      
+  Current.all [package_registry; status; status2]
+
