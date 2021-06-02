@@ -177,6 +177,7 @@ module Compile = struct
         | Ok _ ->
             let ssh = Config.ssh config in
             let switch = Current.Switch.create ~label:"git merge pool switch" () in
+            Current.Job.log job "Merging %s to live branch." branch;
             let* () = Current.Job.use_pool ~switch job git_update_pool in
             Lwt.catch
               (fun () ->
