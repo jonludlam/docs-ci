@@ -175,26 +175,12 @@ module Compile = struct
         match result with
         | Error (`Msg _) as e -> Lwt.return e
         | Ok _ ->
-            let ssh = Config.ssh config in
-            let switch = Current.Switch.create ~label:"git merge pool switch" () in
-            Lwt.catch
-              (fun () ->
-                Current.Job.log job "Merging %s to live branch." branch;
-                let* () = Current.Job.use_pool ~switch job git_update_pool in
-                let** () =
-                  Git_store.Local.merge_to_live ~job ~ssh ~branch
-                    ~msg:(Fmt.to_to_string Package.pp package)
-                in
-                let* () = Current.Switch.turn_off switch in
-                let+ () = Remote_cache.sync ~job digests in
-                let artifacts_digest =
-                  Remote_cache.get digests folder |> Remote_cache.folder_digest_exn
-                in
-                Current.Job.log job "New artifacts digest => %s" artifacts_digest;
-                Ok artifacts_digest)
-              (fun exn ->
-                let* () = Current.Switch.turn_off switch in
-                raise exn))
+            let+ () = Remote_cache.sync ~job digests in
+            let artifacts_digest =
+              Remote_cache.get digests folder |> Remote_cache.folder_digest_exn
+            in
+            Current.Job.log job "New artifacts digest => %s" artifacts_digest;
+            Ok artifacts_digest )
 end
 
 module CompileCache = Current_cache.Make (Compile)
