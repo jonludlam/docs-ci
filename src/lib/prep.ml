@@ -104,6 +104,7 @@ let spec ~ssh ~remote_cache ~cache_key ~artifacts_digest ~voodoo ~base ~(install
          (* Perform the prep step for all packages *)
          run "opam exec -- ~/voodoo-prep -u %s" (universes_assoc prep);
          (* Upload artifacts *)
+         run "echo hi4";
          Spec.add_rsync_retry_script;
          run ~secrets:Config.Ssh.secrets ~network "rsync -avz prep %s:%s/ && echo '%s'"
            (Config.Ssh.host ssh) (Config.Ssh.storage_folder ssh) artifacts_digest;
@@ -173,11 +174,11 @@ module Prep = struct
       (* Success: all the packages we want to prep have already been built *)
       let* () = Current.Job.start ~level:Harmless job in
       Current.Job.log job "Using existing artifacts.";
-      ( match Bos.OS.File.read prev_logs_path with
+      (match Bos.OS.File.read prev_logs_path with
       | Ok logs ->
           Current.Job.log job "Previous log output for this build:\n\n>>>";
           Current.Job.write job (logs ^ "<<<\n\n")
-      | Error _ -> Current.Job.log job "Couldn't find previous logs locally." );
+      | Error _ -> Current.Job.log job "Couldn't find previous logs locally.");
       List.combine prep artifacts_cache
       |> List.map (fun (package, artifacts_digest) ->
              Current.Job.log job "- %a: %s" Fpath.pp (folder package)
@@ -187,17 +188,17 @@ module Prep = struct
                  package_digest = Package.digest package;
                  artifacts_digest = Remote_cache.folder_digest_exn artifacts_digest;
                })
-      |> Lwt.return_ok )
+      |> Lwt.return_ok)
     else if List.exists is_failure artifacts_cache then (
       (* Failure: we already tried to build one of the artifacts. We won't bother trying again. *)
       let* () = Current.Job.start ~level:Harmless job in
       Current.Job.log job "This job already failed.";
-      ( match Bos.OS.File.read prev_logs_path with
+      (match Bos.OS.File.read prev_logs_path with
       | Ok logs ->
           Current.Job.log job "Previous log output for this build:\n\n>>>";
           Current.Job.write job (logs ^ "<<<\n\n")
-      | Error _ -> Current.Job.log job "Couldn't find previous logs locally." );
-      Lwt.return_error (`Msg ("Prep step failed for " ^ Fmt.to_to_string Package.pp install)) )
+      | Error _ -> Current.Job.log job "Couldn't find previous logs locally.");
+      Lwt.return_error (`Msg ("Prep step failed for " ^ Fmt.to_to_string Package.pp install)))
     else
       (* Launch a prep job *)
       let artifacts_cache = List.combine prep artifacts_cache in

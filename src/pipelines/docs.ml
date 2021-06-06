@@ -119,6 +119,7 @@ let v ~config ~api ~opam () =
   let v_prep = Current.map Voodoo.Prep.v voodoo in
   (* 1) Track the list of packages in the opam repository *)
   let metadata = Opam_metadata.v ~ssh:(Config.ssh config) ~repo:opam in
+  let pages = Pages.v ~config ~voodoo:v_do ~commit:metadata in
   let tracked =
     Track.v ~limit:(Config.take_n_last_versions config) ~filter:(Config.track_packages config) opam
   in
@@ -220,4 +221,4 @@ let v ~config ~api ~opam () =
     |> Package.Map.bindings |> List.map snd |> Current.all
     |> Current.collapse ~input:compiled_input_node ~key:"Set status (graphql)" ~value:""
   in
-  Current.all [ package_registry; status; metadata ]
+  Current.all [ package_registry; status; pages ]

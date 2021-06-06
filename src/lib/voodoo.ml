@@ -57,7 +57,8 @@ module Op = struct
 
   let voodoo_prep_paths = Fpath.[ v "voodoo-prep.opam"; v "bin/prep/" ]
 
-  let voodoo_do_paths = Fpath.[ v "voodoo-do.opam"; v "voodoo-lib.opam"; v "bin/do/"; v "lib/"; v "gen/"; v "vendor/" ]
+  let voodoo_do_paths =
+    Fpath.[ v "voodoo-do.opam"; v "voodoo-lib.opam"; v "bin/do/"; v "lib/"; v "gen/"; v "vendor/" ]
 
   let get_oldest_commit_for ~job ~dir ~from paths =
     let paths = List.map Fpath.to_string paths in
@@ -88,7 +89,7 @@ module VoodooCache = Current_cache.Make (Op)
 
 let v () =
   let daily = Current_cache.Schedule.v ~valid_for:(Duration.of_day 1) () in
-  let git = Git.clone ~schedule:daily ~gref:"main" "git://github.com/ocaml-doc/voodoo" in
+  let git = Git.clone ~schedule:daily ~gref:"pages" "git://github.com/jonludlam/voodoo" in
   let open Current.Syntax in
   Current.component "voodoo"
   |> let> git = git in
@@ -143,7 +144,9 @@ module Do = struct
              "opam pin -ny odoc %s && opam depext -iy odoc &&  opam exec -- odoc --version"
              (Config.odoc t.config);
            run ~network ~cache "opam pin -ny %s  && opam depext -iy voodoo-do" (remote_uri t.commit);
-           run "cp $(opam config var bin)/odoc $(opam config var bin)/voodoo-do $(opam config var bin)/voodoo-gen /home/opam";
+           run
+             "cp $(opam config var bin)/odoc $(opam config var bin)/voodoo-do $(opam config var \
+              bin)/voodoo-gen /home/opam";
          ]
 
   let digest t = Git.Commit_id.hash t.commit ^ Config.odoc t.config

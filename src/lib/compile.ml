@@ -137,7 +137,6 @@ module Compile = struct
 
   let build digests job (Key.{ deps; prep; blessed; voodoo; compile_cache; config } as key) =
     let open Lwt.Syntax in
-    let ( let** ) = Lwt_result.bind in
     let package = Prep.package prep in
     let folder = folder ~blessed package in
     let cache_key = remote_cache_key key in
@@ -180,7 +179,7 @@ module Compile = struct
               Remote_cache.get digests folder |> Remote_cache.folder_digest_exn
             in
             Current.Job.log job "New artifacts digest => %s" artifacts_digest;
-            Ok artifacts_digest )
+            Ok artifacts_digest)
 end
 
 module CompileCache = Current_cache.Make (Compile)

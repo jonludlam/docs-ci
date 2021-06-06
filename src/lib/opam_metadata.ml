@@ -27,7 +27,7 @@ module Metadata = struct
     let digest = Fmt.to_to_string Current_git.Commit.pp
   end
 
-  module Outcome = Current.Unit
+  module Outcome = Current_git.Commit
 
   let pp fmt (_k, v) = Format.fprintf fmt "metadata-%a" Current_git.Commit.pp v
 
@@ -113,13 +113,16 @@ module Metadata = struct
           Current.Process.exec ~cancellable:true ~job
             ("", Git_store.Local.push ~directory:state_dir ssh |> Bos.Cmd.to_list |> Array.of_list)
         in
-        Git_store.Local.merge_to_live ~job ~ssh ~branch:"status" ~msg:"Update opam metadata")
+        let** _ =
+          Git_store.Local.merge_to_live ~job ~ssh ~branch:"status" ~msg:"Update opam metadata"
+        in
+        Lwt.return (Ok v))
       (fun () -> Current.Switch.turn_off switch)
 end
 
 module MetadataCache = Current_cache.Output (Metadata)
 
-let v ~ssh ~(repo : Current_git.Commit.t Current.t) : unit Current.t =
+let v ~ssh ~(repo : Current_git.Commit.t Current.t) : Current_git.Commit.t Current.t =
   let open Current.Syntax in
   Current.component "set-status"
   |> let> repo = repo in

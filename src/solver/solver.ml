@@ -83,10 +83,14 @@ let main commit =
         let opam_repository_commit = Store.Hash.of_hex opam_repository_commit in
         assert (Store.Hash.equal opam_repository_commit commit);
         let root_pkgs = pkgs |> List.map OpamPackage.Name.of_string in
+        let constraints = ("ocaml-base-compiler", "4.12.0") :: constraints in
         let constraints =
           constraints
           |> List.map (fun (name, version) ->
                  (OpamPackage.Name.of_string name, (`Eq, OpamPackage.Version.of_string version)))
+          (* |> (fun l ->
+               (OpamPackage.Name.of_string "ocaml-base-compiler", (`Eq, OpamPackage.Version.of_string "4.12.0"))
+               :: l) *)
           |> OpamPackage.Name.Map.of_list
         in
         platforms
