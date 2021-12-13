@@ -70,7 +70,7 @@ let spec ~ssh ~voodoo ~base ~(install : Package.t) (prep : Package.t list) =
           |> List.map (fun pkg -> Package.opam pkg |> OpamPackage.to_string)
           |> String.concat " "
         in
-        run ~network ~cache "opam depext -viy %s && opam install %s" packages_str packages_str
+        run ~network ~cache "opam depext -viy %s astring rresult && opam pin add -n js_of_ocaml-toplevel git+https://github.com/jonludlam/js_of_ocaml#lazy_files && opam pin add -n js_of_ocaml git+https://github.com/jonludlam/js_of_ocaml#lazy_files && opam install %s astring rresult js_of_ocaml js_of_ocaml-toplevel && opam pin add -y js_top_worker git+https://github.com/jonludlam/js_top_worker" packages_str packages_str
   in
 
   let prep_storage_folders = List.rev_map (fun p -> (Storage.Prep, p)) prep in
@@ -89,6 +89,7 @@ let spec ~ssh ~voodoo ~base ~(install : Package.t) (prep : Package.t list) =
        [
          (* Install required packages *)
          run "sudo mkdir /src";
+         run "opam switch";
          copy [ "packages" ] ~dst:"/src/packages";
          copy [ "repo" ] ~dst:"/src/repo";
          run "opam repo remove default && opam repo add opam /src";
@@ -110,7 +111,7 @@ let spec ~ssh ~voodoo ~base ~(install : Package.t) (prep : Package.t list) =
                   packages_str;
               ];
          (* Perform the prep step for all packages *)
-         run "opam exec -- ~/voodoo-prep -u %s" (universes_assoc prep);
+         run "opam exec -- ~/voodoo-prep -u %s -v %s" (universes_assoc prep) (universes_assoc all_deps);
          (* Extract artifacts  - cache needs to be invalidated if we want to be able to read the logs *)
          run ~network ~secrets:Config.Ssh.secrets "%s"
          @@ Misc.Cmd.list

@@ -90,8 +90,11 @@ let main commit =
           constraints
           |> List.map (fun (name, version) ->
                  (OpamPackage.Name.of_string name, (`Eq, OpamPackage.Version.of_string version)))
-          |> OpamPackage.Name.Map.of_list
         in
+        let jsoo_constraints =
+          [ OpamPackage.Name.of_string "js_of_ocaml", (`Eq, OpamPackage.Version.of_string "3.11.0") ]
+        in
+        let constraints = constraints @ jsoo_constraints |> OpamPackage.Name.Map.of_list in
         platforms
         |> List.iter (fun (_id, platform) ->
                let msg =

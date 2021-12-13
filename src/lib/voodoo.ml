@@ -103,7 +103,7 @@ module VoodooCache = Current_cache.Make (Op)
 
 let v () =
   let daily = Current_cache.Schedule.v ~valid_for:(Duration.of_day 1) () in
-  let git = Git.clone ~schedule:daily ~gref:"main" "git://github.com/ocaml-doc/voodoo" in
+  let git = Git.clone ~schedule:daily ~gref:"jsoo" "git://github.com/jonludlam/voodoo" in
   let open Current.Syntax in
   Current.component "voodoo"
   |> let> git = git in

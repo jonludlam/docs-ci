@@ -2,14 +2,18 @@ type repository =
   | HtmlRaw of (Epoch.t * Package.Blessing.t)
   | Linked of (Epoch.t * Package.Blessing.t)
   | Compile of Package.Blessing.t
+  | Jsoo of Epoch.t
   | Prep
 
 val folder : repository -> Package.t -> Fpath.t
+
+val toplevel_by_digest_folder : repository -> Fpath.t
 
 module Base : sig
   type repository =
     | HtmlRaw of Epoch.t
     | Linked of Epoch.t
+    | Jsoo of Epoch.t
     | Compile
     | Prep
 

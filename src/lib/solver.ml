@@ -19,7 +19,7 @@ let job_log job =
 let perform_solve ~solver ~pool ~job ~(platform : Platform.t) ~opam track =
   let open Lwt.Syntax in
   let package = Track.pkg track in
-  let packages = [ OpamPackage.name_to_string package; "ocaml-base-compiler" ] in
+  let packages = [ OpamPackage.name_to_string package; "ocaml-base-compiler"; "js_of_ocaml-toplevel"; "astring"; "rresult"] in
   let constraints =
     [ (OpamPackage.name_to_string package, OpamPackage.version_to_string package) ]
   in

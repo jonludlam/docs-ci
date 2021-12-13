@@ -4,7 +4,7 @@ let version = "v1"
 
 let v config voodoo = { config; voodoo }
 
-type stage = [ `Linked | `Html ]
+type stage = [ `Linked | `Html | `Jsoo ]
 
 let digest stage t =
   let key =
@@ -18,6 +18,8 @@ let digest stage t =
         Fmt.str "%s:%s:%s:%s" version (Config.odoc t.config)
           Voodoo.Do.(v t.voodoo |> digest)
           Voodoo.Prep.(v t.voodoo |> digest)
+    | `Jsoo ->
+        Fmt.str "%s:%s" version Voodoo.Prep.(v t.voodoo |> digest)
   in
   key |> Digest.string |> Digest.to_hex
 

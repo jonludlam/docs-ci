@@ -2,6 +2,7 @@ module Base = struct
   type repository =
     | HtmlRaw of Epoch.t
     | Linked of Epoch.t
+    | Jsoo of Epoch.t
     | Compile
     | Prep
 
@@ -12,18 +13,21 @@ module Base = struct
     | Linked generation -> Fpath.(generation_folder `Linked generation / "linked")
     | Compile -> Fpath.v "compile"
     | Prep -> Fpath.v "prep"
+    | Jsoo generation -> Fpath.(generation_folder `Jsoo generation / "jsoo")
 end
 
 type repository =
   | HtmlRaw of (Epoch.t * Package.Blessing.t)
   | Linked of (Epoch.t * Package.Blessing.t)
   | Compile of Package.Blessing.t
+  | Jsoo of Epoch.t
   | Prep
 
 let to_base_repo = function
   | HtmlRaw (t, _) -> Base.HtmlRaw t
   | Linked (t, _) -> Linked t
   | Compile _ -> Compile
+  | Jsoo t -> Jsoo t
   | Prep -> Prep
 
 let base_folder ~blessed ~prep package =
@@ -39,10 +43,23 @@ let folder repository package =
   let blessed =
     match repository with
     | HtmlRaw (_, b) | Linked (_, b) | Compile b -> b
+    | Jsoo _ -> Universe
     | Prep -> Universe
   in
   let blessed = blessed = Blessed in
-  Fpath.(Base.folder (to_base_repo repository) // base_folder ~blessed ~prep:(repository=Prep) package)
+  let prep =
+    match repository with
+    | Prep -> true
+    | Jsoo _ -> true
+    | _ -> false
+  in
+  Fpath.(Base.folder (to_base_repo repository) // base_folder ~blessed ~prep package)
+
+let toplevel_by_digest_folder repository =
+  match repository with
+  | Jsoo _ ->
+    Fpath.(Base.folder (to_base_repo repository) / "toplevel-by-digest")
+  | _ -> failwith "toplevels_by_digest_folder only works for Jsoo repository"
 
 let for_all packages command =
   let data =

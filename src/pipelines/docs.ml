@@ -61,6 +61,29 @@ let compile ~generation ~config ~voodoo_gen ~voodoo_do
   in
   Package.Map.filter_map get_compilation_node preps |> Package.Map.bindings
 
+let jsoo ~generation ~config ~voodoo_prep 
+    (preps : Prep.t Current.t Package.Map.t) =
+    let compilation_jobs = ref Package.Map.empty in
+
+    let rec get_compilation_job package =
+      let name = package |> Package.opam |> OpamPackage.to_string in
+      try Package.Map.find package !compilation_jobs
+      with Not_found ->
+        let job =
+          Package.Map.find_opt package preps
+          |> Option.map @@ fun prep ->
+             let dependencies = Package.universe package |> Package.Universe.deps in
+             let compile_dependencies =
+               List.filter_map get_compilation_job dependencies |> Current.list_seq
+             in
+             Jsoo.v ~generation ~config ~name ~voodoo:voodoo_prep
+               ~deps:compile_dependencies prep
+        in
+        compilation_jobs := Package.Map.add package job !compilation_jobs;
+        job
+    in
+    
+    Package.Map.filter_map (fun p _ -> get_compilation_job p) preps |> Package.Map.bindings
 let blacklist = [ "ocaml-secondary-compiler"; "ocamlfind-secondary" ]
 
 let rec with_context_fold lst fn =
@@ -132,6 +155,18 @@ let compile_hierarchical_collapse ~input lst =
   |> collapse_by ~key ~input package_name (Some package_name_version)
   |> collapse_by ~key ~input first_char (Some package_name)
   |> collapse_single ~key ~input
+
+  let jsoo_hierarchical_collapse ~input lst =
+    let package_name x = x |> Package.opam |> OpamPackage.name_to_string in
+    let first_char x =
+      let name = x |> Package.opam |> OpamPackage.name_to_string in
+      String.sub name 0 1 |> String.uppercase_ascii
+    in
+    let key = "jsoo" in
+    lst
+    |> collapse_by ~key ~input ~force_collapse:true package_name None
+    |> collapse_by ~key ~input first_char (Some package_name)
+    |> collapse_single ~key ~input
 
 let v ~config ~opam () =
   let open Current.Syntax in
@@ -222,10 +257,22 @@ let v ~config ~opam () =
     in
     (c |> List.to_seq |> Package.Map.of_seq, compile_node)
   in
+  (* 7.5 jsoo *)
+  let j, jsoo_node =
+  let jsoo = jsoo ~generation ~config ~voodoo_prep:v_prep prepped in 
+    let c, jsoo_node =
+      jsoo |> jsoo_hierarchical_collapse ~input:prepped_input_node
+    in
+    (c |> List.to_seq |> Package.Map.of_seq, jsoo_node) in
 
+  let input =
+    let+ _html_input_node = html_input_node
+    and+ _jsoo_node = jsoo_node in
+    Current.return ()
+  in
   (* 8) Update live folders *)
   let live_branch =
-    Current.collapse ~input:html_input_node ~key:"Update live folders" ~value:""
+    Current.collapse ~input ~key:"Update live folders" ~value:""
     @@
     let commits_raw =
       Package.Map.bindings html
@@ -236,8 +283,18 @@ let v ~config ~opam () =
       |> Current.list_seq
       |> Current.map (List.filter_map Result.to_option)
     in
+    let commits_raw2 =
+      Package.Map.bindings j
+      |> List.map (fun (_, j) ->
+             j
+             |> Current.map (fun t -> (Jsoo.jsoo_hash t))
+             |> Current.state ~hidden:true)
+      |> Current.list_seq
+      |> Current.map (List.filter_map Result.to_option)
+    in
     let live_html = Live.set_to ~ssh "html" `Html generation in
     let live_linked = Live.set_to ~ssh "linked" `Linked generation in
-    Current.all [ commits_raw |> Current.ignore_value; live_html; live_linked ]
+    let live_jsoo = Live.set_to ~ssh "jsoo" `Jsoo generation in
+    Current.all [ commits_raw |> Current.ignore_value; live_html; live_linked; live_jsoo; commits_raw2 |> Current.ignore_value ]
   in
   live_branch
