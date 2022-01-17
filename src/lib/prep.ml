@@ -70,7 +70,7 @@ let spec ~ssh ~voodoo ~base ~(install : Package.t) (prep : Package.t list) =
           |> List.map (fun pkg -> Package.opam pkg |> OpamPackage.to_string)
           |> String.concat " "
         in
-        run ~network ~cache "opam depext -viy %s astring rresult && opam pin add -n js_of_ocaml-toplevel git+https://github.com/jonludlam/js_of_ocaml#lazy_files && opam pin add -n js_of_ocaml git+https://github.com/jonludlam/js_of_ocaml#lazy_files && opam install %s astring rresult js_of_ocaml js_of_ocaml-toplevel && opam pin add -y js_top_worker git+https://github.com/jonludlam/js_top_worker" packages_str packages_str
+        run ~network ~cache "opam depext -viy %s astring rresult && opam install %s astring rresult js_of_ocaml js_of_ocaml-toplevel && opam pin add -y js_top_worker git+https://github.com/jonludlam/js_top_worker" packages_str packages_str
   in
 
   let prep_storage_folders = List.rev_map (fun p -> (Storage.Prep, p)) prep in

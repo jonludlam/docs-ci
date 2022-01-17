@@ -23,9 +23,6 @@ let spec ~generation ~ssh ~base ~voodoo prep =
          copy ~from:(`Build "tools")
            [ "/home/opam/voodoo-prep" ]
            ~dst:"/home/opam/";
-         run ~network:Misc.network "opam pin add -n js_of_ocaml git+https://github.com/jonludlam/js_of_ocaml#lazy_files";
-         run ~network:Misc.network "opam pin add -n js_of_ocaml-compiler git+https://github.com/jonludlam/js_of_ocaml#lazy_files";
-         run ~network:Misc.network "opam pin add -n js_of_ocaml-toplevel git+https://github.com/jonludlam/js_of_ocaml#lazy_files";
          run ~network:Misc.network "opam install js_of_ocaml-toplevel";
          (* obtain the compiled dependencies, prep folder and extract it *)
          run ~network:Misc.network ~secrets:Config.Ssh.secrets "%s"
