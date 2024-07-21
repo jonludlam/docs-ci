@@ -59,7 +59,15 @@ let universes ~packages (resolutions : OpamPackage.t list) =
         result
   in
   List.rev_map
-    (fun pkg -> (pkg, aux pkg |> OpamPackage.Set.elements))
+    (fun pkg ->
+      let name, version = (OpamPackage.name pkg, OpamPackage.version pkg) in
+      let opamfile : OpamFile.OPAM.t =
+        packages
+        |> OpamPackage.Name.Map.find name
+        |> OpamPackage.Version.Map.find version
+      in
+      let str = OpamFile.OPAM.write_to_string opamfile in
+      (pkg, str, aux pkg |> OpamPackage.Set.elements))
     resolutions
 
 let solve ~packages ~constraints ~root_pkgs (vars : Worker.Vars.t) =
@@ -74,12 +82,12 @@ let solve ~packages ~constraints ~root_pkgs (vars : Worker.Vars.t) =
       let universes = universes ~packages pkgs in
       Ok
         (List.rev_map
-           (fun (pkg, univ) ->
-             (OpamPackage.to_string pkg, List.rev_map OpamPackage.to_string univ))
+           (fun (pkg, str, univ) ->
+             (OpamPackage.to_string pkg, str, List.rev_map OpamPackage.to_string univ))
            universes)
   | Error diagnostics -> Error (Solver.diagnostics diagnostics)
 
-type solve_result = (string * string list) list [@@deriving yojson]
+type solve_result = (string * string * string list) list [@@deriving yojson]
 
 let main commit =
   let packages =
