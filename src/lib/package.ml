@@ -98,7 +98,32 @@ end
 
 include Package
 
+let topo_sort packages =
+  let graph = List.map (fun pkg ->
+    let universe = universe pkg in
+    let deps = Universe.deps universe in
+    (pkg, deps)
+    ) packages
+  in
+  let rec loop graph =
+    match graph with
+    | [] -> []
+    | _ -> 
+      let zero_deps,others = List.partition (fun (_,x) -> x = []) graph in
+      let zero_deps = List.map fst zero_deps in
+      let other = List.map (fun (x,y) -> (x, List.filter (fun dep -> not (List.mem dep zero_deps)) y)) others in
+      let sorted = List.sort compare zero_deps in
+      sorted :: loop other
+  in
+  List.flatten (loop graph)
+
+  
+
 let all_deps pkg = pkg :: (pkg |> universe |> Universe.deps)
+
+let ocaml_version pkg =
+  pkg |> universe |> Universe.deps |> List.map opam |> List.find 
+    (fun p -> OpamPackage.name_to_string p = "ocaml-base-compiler") |> OpamPackage.version_to_string
 
 module PackageMap = Map.Make (Package)
 module PackageSet = Set.Make (Package)

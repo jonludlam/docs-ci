@@ -45,7 +45,23 @@ let folder repository package =
     Base.folder (to_base_repo repository)
     // base_folder ~blessed ~prep:(repository = Prep) package)
 
-let for_all packages command =
+let split packages =
+  let rec take n l =
+    match n,l with
+    | 0, _ -> [], l
+    | n, x::xs ->
+      let taken, rest = take (n-1) xs in
+      x :: taken, rest
+    | _, [] -> [], []
+  in
+  let rec run remaining =
+    match take 10 remaining with
+    | [], _ -> []
+    | taken, rest -> taken :: run rest
+  in
+  run packages
+
+let for_all command packages =
   let data =
     let pp_package f (repository, package) =
       let dir = folder repository package |> Fpath.to_string in
@@ -56,6 +72,10 @@ let for_all packages command =
   in
   Fmt.str "for DATA in %s; do IFS=\",\"; set -- $DATA; %s done" data command
 
+let for_all packages command =
+  let packages = split packages in
+  List.map (for_all command) packages
+
 type id_hash = { id : string; hash : string } [@@deriving yojson]
 
 module Tar = struct
@@ -64,12 +84,12 @@ module Tar = struct
     | [] ->
         Fmt.str
           "HASH=$((sha256sum $1/content.tar | cut -d \" \" -f 1)  || echo -n \
-           'empty'); printf \"%s:$2:$HASH\\n\";"
+           'empty'); rm $1/content.tar; printf \"%s:$2:$HASH\\n\";"
           prefix
     | extra_files ->
         Fmt.str
           "HASH=$((sha256sum $1/content.tar %s | sort | sha256sum | cut -d \" \
-           \" -f 1)  || echo -n 'empty'); printf \"%s:$2:$HASH\\n\";"
+           \" -f 1)  || echo -n 'empty'); rm $1/content.tar; printf \"%s:$2:$HASH\\n\";"
           (List.map (fun f -> "\"$1/" ^ f ^ "\"") extra_files
           |> String.concat " ")
           prefix
