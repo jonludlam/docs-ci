@@ -5,7 +5,7 @@
     the compilation, link and html generation steps, outputting the results in
     the compile/ and html/ folders. *)
 
-type hashes = { compile_hash : string; linked_hash : string }
+type hashes = { compile_hash : string; linked_hash : string; html_hash : string }
 
 type t
 (** A compiled package *)

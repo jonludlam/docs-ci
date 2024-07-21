@@ -141,13 +141,13 @@ type t = {
 
 let voodoo_branch =
   Arg.value
-  @@ Arg.opt Arg.(string) "main"
+  @@ Arg.opt Arg.(string) "odoc-driver"
   @@ Arg.info ~doc:"Voodoo branch to watch" ~docv:"VOODOO_BRANCH"
        [ "voodoo-branch" ]
 
 let voodoo_repo =
   Arg.value
-  @@ Arg.opt Arg.string "https://github.com/ocaml-doc/voodoo.git"
+  @@ Arg.opt Arg.string "https://github.com/jonludlam/voodoo.git"
   @@ Arg.info ~doc:"Voodoo repository to watch" ~docv:"VOODOO_REPO"
        [ "voodoo-repo" ]
 
@@ -214,7 +214,10 @@ let cmdliner =
 
 (* odoc pinned to tag 2.2.2 *)
 let odoc _ =
-  "https://github.com/ocaml/odoc.git#34a48e2543f6ea5716e9ee922954fa0917561dd7"
+  "https://github.com/jonludlam/odoc.git#5e91941141cb72c1aa84dc1dcb819b2d54aa02cd"
+
+let sherlodoc _ =
+  "https://github.com/art-w/sherlodoc.git#cecbc26e969c5d7048c1b320d2b742d63db72bb0"
 
 let pool _ = "linux-x86_64"
 let jobs t = t.jobs

@@ -1,4 +1,4 @@
-type hashes = { compile_hash : string; linked_hash : string }
+type hashes = { compile_hash : string; linked_hash : string; html_hash : string }
 [@@deriving yojson]
 
 type t = { package : Package.t; blessing : Package.Blessing.t; hashes : hashes }
@@ -7,41 +7,48 @@ let hashes t = t.hashes
 let blessing t = t.blessing
 let package t = t.package
 
-let spec_success ~ssh ~base ~voodoo ~deps ~blessing ~generation prep =
+let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~voodoo ~deps ~blessing ~generation prep =
   let open Obuilder_spec in
   let package = Prep.package prep in
   let prep_folder = Storage.folder Prep package in
   let compile_folder = Storage.folder (Compile blessing) package in
   let linked_folder = Storage.folder (Linked (generation, blessing)) package in
+  let raw_folder = Storage.folder (HtmlRaw (generation, blessing)) package in
   let opam = package |> Package.opam in
   let name = opam |> OpamPackage.name_to_string in
   let tools = Voodoo.Do.spec ~base voodoo |> Spec.finish in
+  let odoc_driver = Voodoo.OdocDriver.spec ~base:odoc_driver_base (Voodoo.OdocDriver.v ~odoc_pin ~sherlodoc_pin) |> Spec.finish in
   base
   |> Spec.children ~name:"tools" tools
+  |> Spec.children ~name:"odoc_driver" odoc_driver
   |> Spec.add
-       [
+       ([
          workdir "/home/opam/docs/";
          run "sudo chown opam:opam . ";
          (* Import odoc and voodoo-do *)
          copy ~from:(`Build "tools")
-           [ "/home/opam/odoc"; "/home/opam/voodoo-do" ]
+           [ "/home/opam/odoc";]
            ~dst:"/home/opam/";
-         run "mv ~/odoc $(opam config var bin)/odoc";
+         copy ~from:(`Build "odoc_driver")
+           [ "/home/opam/odoc_driver"; "/home/opam/sherlodoc" ]
+           ~dst:"/home/opam/";
+         run "mv ~/sherlodoc $(opam config var bin)/sherlodoc";
+         run "echo hello";
          (* obtain the compiled dependencies, prep folder and extract it *)
-         run ~network:Misc.network ~secrets:Config.Ssh.secrets "%s"
-         @@ Misc.Cmd.list
-              [
-                Storage.for_all
+       ] @ (List.map (run ~network:Misc.network ~secrets:Config.Ssh.secrets "%s")
+            (Storage.for_all
                   (deps
                   |> List.rev_map (fun { blessing; package; _ } ->
                          (Storage.Compile blessing, package)))
                   (Fmt.str "rsync -aR %s:%s/./$1 .;" (Config.Ssh.host ssh)
-                     (Config.Ssh.storage_folder ssh));
-                Fmt.str "rsync -aR %s:%s/./%s ." (Config.Ssh.host ssh)
+                     (Config.Ssh.storage_folder ssh)))) @
+       [ run ~network:Misc.network ~secrets:Config.Ssh.secrets "%s"
+           @@ Misc.Cmd.list
+               [Fmt.str "rsync -aR %s:%s/./%s ." (Config.Ssh.host ssh)
                   (Config.Ssh.storage_folder ssh)
                   (Fpath.to_string prep_folder);
                 Fmt.str "find . -name '*.tar' -exec tar -xvf {} \\;";
-              ];
+               ];
          (* prepare the compilation folder *)
          run "%s"
          @@ Misc.Cmd.list
@@ -57,10 +64,15 @@ let spec_success ~ssh ~base ~voodoo ~deps ~blessing ~generation prep =
          run "%s"
          @@ Misc.Cmd.list
               [
+                "ls -lR";
                 Fmt.str
-                  "OCAMLRUNPARAM=b opam exec -- /home/opam/voodoo-do -p %s %s "
+                  "OCAMLRUNPARAM=b opam exec -- /home/opam/odoc_driver --voodoo --verbose --odoc /home/opam/odoc --odoc-dir compile --odocl-dir linked --html-dir %s --package %s %s "
+                  (Fpath.to_string (Storage.Base.folder (HtmlRaw generation)))
                   name
-                  (match blessing with Blessed -> "-b" | Universe -> "");
+                  (match blessing with Blessed -> "--blessed" | Universe -> "");
+                
+                Fmt.str "find %a" Fpath.pp compile_folder;
+
                 Misc.tar_cmd compile_folder;
                 Fmt.str "mkdir -p linked && mkdir -p %a && mv linked %a/"
                   Fpath.pp
@@ -87,7 +99,23 @@ let spec_success ~ssh ~base ~voodoo ~deps ~blessing ~generation prep =
                   (Fpath.to_string linked_folder)
                   (Storage.Tar.hash_command ~prefix:"LINKED" ());
               ];
-       ]
+        run ~network:Misc.network ~secrets:Config.Ssh.secrets "%s"
+        @@ Misc.Cmd.list
+              [
+                Fmt.str "echo '%f'" (Random.float 1.);
+                Fmt.str "mkdir -p %a" Fpath.pp raw_folder;
+                (* Extract raw and html output *)
+                Fmt.str "rsync -aR ./%s %s:%s/."
+                  (Fpath.to_string raw_folder)
+                  (Config.Ssh.host ssh)
+                  (Config.Ssh.storage_folder ssh);
+                (* Print hashes *)
+                Fmt.str "set '%s' raw; %s"
+                  (Fpath.to_string raw_folder)
+                  (Storage.hash_command ~prefix:"RAW");
+              ];
+     
+       ])
 
 let spec_failure ~ssh ~base ~voodoo ~blessing ~generation prep =
   let open Obuilder_spec in
@@ -107,9 +135,10 @@ let spec_failure ~ssh ~base ~voodoo ~blessing ~generation prep =
          run "sudo chown opam:opam . ";
          (* Import odoc and voodoo-do *)
          copy ~from:(`Build "tools")
-           [ "/home/opam/odoc"; "/home/opam/voodoo-do" ]
+           [ "/home/opam/odoc"; "/home/opam/odoc_driver"; "/home/opam/sherlodoc" ]
            ~dst:"/home/opam/";
          run "mv ~/odoc $(opam config var bin)/odoc";
+         run "mv ~/sherlodoc $(opam config var bin)/sherlodoc";
          (* obtain the prep folder (containing opam.err.log) and extract it *)
          run ~network:Misc.network ~secrets:Config.Ssh.secrets "%s"
          @@ Misc.Cmd.list
@@ -146,6 +175,7 @@ let spec_failure ~ssh ~base ~voodoo ~blessing ~generation prep =
                   Fpath.pp
                   (Storage.Base.generation_folder `Linked generation);
                 Fmt.str "mkdir -p %a" Fpath.pp linked_folder;
+                Fmt.str "touch %a/hack" Fpath.pp linked_folder;
                 Misc.tar_cmd linked_folder;
               ];
          (* Extract compile output   - cache needs to be invalidated if we want to be able to read the logs *)
@@ -223,11 +253,12 @@ module Compile = struct
       deps : output list;
       prep : Prep.t;
       base : Spec.t;
+      odoc_driver_base : Spec.t;
       blessing : Package.Blessing.t;
       voodoo : Voodoo.Do.t;
     }
 
-    let key { config = _; deps; prep; blessing; voodoo; base = _ } =
+    let key { config = _; deps; prep; blessing; voodoo; base = _; odoc_driver_base = _ } =
       Fmt.str "v9-%s-%s-%s-%a-%s"
         (Package.Blessing.to_string blessing)
         (Prep.package prep |> Package.digest)
@@ -246,16 +277,18 @@ module Compile = struct
   let auto_cancel = true
 
   let build { generation; _ } job
-      Key.{ deps; prep; blessing; voodoo; config; base } =
+      Key.{ deps; prep; blessing; voodoo; config; base; odoc_driver_base } =
     let open Lwt.Syntax in
     let ( let** ) = Lwt_result.bind in
     let package = Prep.package prep in
+    let odoc_pin = Config.odoc config in
+    let sherlodoc_pin = Config.sherlodoc config in
     let** spec =
       match Prep.result prep with
       | Success ->
           Lwt.return_ok
             (spec_success ~generation ~ssh:(Config.ssh config) ~voodoo ~base
-               ~deps ~blessing prep)
+              ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~deps ~blessing prep)
       | Failed ->
           Lwt.return_ok
             (spec_failure ~generation ~ssh:(Config.ssh config) ~voodoo ~base
@@ -292,10 +325,20 @@ module Compile = struct
     let** compile, linked =
       Retry.retry_loop ~job ~log_string:(Current.Job.id job) fn
     in
+    let extract_hashes v_html_raw line =
+      (* some early stopping could be done here *)
+      let html_raw =
+        Storage.parse_hash ~prefix:"RAW" line |> or_default v_html_raw
+      in
+      html_raw
+    in
+    let** html_raw = Misc.fold_logs build_job extract_hashes None in
+
     try
       let compile = Option.get compile in
       let linked = Option.get linked in
-      Lwt.return_ok { compile_hash = compile.hash; linked_hash = linked.hash }
+      let html_raw = Option.get html_raw in
+      Lwt.return_ok { compile_hash = compile.hash; linked_hash = linked.hash; html_hash=html_raw.hash }
     with Invalid_argument _ ->
       Lwt.return_error (`Msg "Compile: failed to parse output")
 end
@@ -305,12 +348,14 @@ module CompileCache = Current_cache.Make (Compile)
 let v ~generation ~config ~name ~voodoo ~blessing ~deps prep =
   let open Current.Syntax in
   Current.component "do %s" name
-  |> let> prep and> voodoo and> blessing and> deps and> generation in
+  |> let> prep and> voodoo and> blessing and> deps and> generation 
+     and> odoc_driver_base = Misc.default_base_image in
      let package = Prep.package prep in
      let base = Prep.base prep in
+     
      let output =
        CompileCache.get { Compile.generation }
-         Compile.Key.{ prep; blessing; voodoo; deps; config; base }
+         Compile.Key.{ prep; blessing; voodoo; deps; config; base; odoc_driver_base }
      in
      Current.Primitive.map_result
        (Result.map (fun hashes -> { package; blessing; hashes }))
