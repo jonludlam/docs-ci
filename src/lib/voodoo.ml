@@ -14,7 +14,6 @@ module Git = Current_git
 type t0 = {
   voodoo_do : Git.Commit_id.t;
   voodoo_prep : Git.Commit_id.t;
-  voodoo_gen : Git.Commit_id.t;
 }
 
 module Op = struct
@@ -50,12 +49,11 @@ module Op = struct
       let repo = json |> member "repo" |> to_string in
       Git.Commit_id.v ~repo ~gref ~hash
 
-    let marshal { voodoo_do; voodoo_prep; voodoo_gen } =
+    let marshal { voodoo_do; voodoo_prep; } =
       `Assoc
         [
           ("do", to_yojson voodoo_do);
           ("prep", to_yojson voodoo_prep);
-          ("gen", to_yojson voodoo_gen);
         ]
       |> Yojson.Safe.to_string
 
@@ -64,8 +62,7 @@ module Op = struct
       let open Yojson.Safe.Util in
       let voodoo_do = json |> member "do" |> of_yojson_exn in
       let voodoo_prep = json |> member "prep" |> of_yojson_exn in
-      let voodoo_gen = json |> member "gen" |> of_yojson_exn in
-      { voodoo_do; voodoo_prep; voodoo_gen }
+      { voodoo_do; voodoo_prep }
   end
 
   let voodoo_prep_paths = Fpath.[ v "voodoo-prep.opam"; v "src/voodoo-prep/" ]
@@ -77,15 +74,6 @@ module Op = struct
         v "voodoo-lib.opam";
         v "src/voodoo-do/";
         v "src/voodoo/";
-      ]
-
-  let voodoo_gen_paths =
-    Fpath.
-      [
-        v "voodoo-gen.opam";
-        v "src/voodoo-gen/";
-        v "src/voodoo/";
-        v "src/voodoo-web/";
       ]
 
   let get_oldest_commit_for ~job ~dir ~from paths =
@@ -119,14 +107,11 @@ module Op = struct
       get_oldest_commit_for ~job ~dir ~from voodoo_prep_paths
     in
     let** voodoo_do = get_oldest_commit_for ~job ~dir ~from voodoo_do_paths in
-    let** voodoo_gen = get_oldest_commit_for ~job ~dir ~from voodoo_gen_paths in
     Current.Job.log job "Prep commit: %s" voodoo_prep;
     Current.Job.log job "Do commit: %s" voodoo_do;
-    Current.Job.log job "Gen commit: %s" voodoo_gen;
     let voodoo_prep = with_hash ~id voodoo_prep in
     let voodoo_do = with_hash ~id voodoo_do in
-    let voodoo_gen = with_hash ~id voodoo_gen in
-    Lwt.return_ok { voodoo_prep; voodoo_do; voodoo_gen }
+    Lwt.return_ok { voodoo_prep; voodoo_do; }
 end
 
 module VoodooCache = Current_cache.Make (Op)
@@ -142,16 +127,15 @@ let v ~gref ~repo () =
 type t = {
   voodoo_do : Git.Commit_id.t;
   voodoo_prep : Git.Commit_id.t;
-  voodoo_gen : Git.Commit_id.t;
   config : Config.t;
 }
 
 let v config =
   let open Current.Syntax in
-  let+ { voodoo_do; voodoo_prep; voodoo_gen } =
+  let+ { voodoo_do; voodoo_prep } =
     v ~gref:(Config.voodoo_branch config) ~repo:(Config.voodoo_repo config) ()
   in
-  { voodoo_do; voodoo_prep; voodoo_gen; config }
+  { voodoo_do; voodoo_prep; config }
 
 let remote_uri commit =
   let repo = Git.Commit_id.repo commit in
@@ -160,10 +144,9 @@ let remote_uri commit =
 
 let digest t =
   let key =
-    Fmt.str "%s\n%s\n%s\n"
+    Fmt.str "%s\n%s\n"
       (Git.Commit_id.hash t.voodoo_prep)
       (Git.Commit_id.hash t.voodoo_do)
-      (Git.Commit_id.hash t.voodoo_gen)
   in
   Digest.(string key |> to_hex)
 
@@ -204,41 +187,42 @@ module Do = struct
          [
            run ~network "sudo apt-get update && sudo apt-get install -yy m4";
            run ~network ~cache
+             "opam pin -ny odoc-parser.dev %s && opam depext -iy odoc-parser"
+             (Config.odoc t.config);
+           run ~network ~cache
              "opam pin -ny odoc.dev %s && opam depext -iy odoc"
              (Config.odoc t.config);
-           run ~network ~cache "opam pin -ny %s && opam depext -iy voodoo-do"
-             (remote_uri t.commit);
            run
-             "cp $(opam config var bin)/odoc $(opam config var bin)/voodoo-do \
-              /home/opam";
+             "cp $(opam config var bin)/odoc /home/opam";
          ]
 
   let digest t = Git.Commit_id.hash t.commit
   let commit t = t.commit
 end
 
-module Gen = struct
-  type voodoo = t
-  type t = { commit : Git.Commit_id.t; config : Config.t }
+module OdocDriver = struct
+  type t = { odoc_pin : string; sherlodoc_pin : string}
 
-  let v { voodoo_gen; config; _ } = { commit = voodoo_gen; config }
+  let v ~odoc_pin ~sherlodoc_pin = { odoc_pin; sherlodoc_pin }
 
   let spec ~base t =
     let open Obuilder_spec in
     base
     |> Spec.add
          [
-           run ~network "sudo apt-get update && sudo apt-get install -yy m4";
+           run ~network "sudo apt-get update";
            run ~network ~cache
-             "opam pin -ny odoc.dev %s && opam depext -iy odoc"
-             (Config.odoc t.config);
-           run ~network ~cache "opam pin -ny %s  && opam depext -iy voodoo-gen"
-             (remote_uri t.commit);
+             "opam pin -ny sherlodoc.dev %s"
+             t.sherlodoc_pin;
+           run ~network ~cache
+             "opam pin -ny odoc-parser.dev %s && opam pin -ny odoc.dev %s && opam pin -ny odoc-driver.dev %s"
+             t.odoc_pin t.odoc_pin t.odoc_pin;
+           run ~network ~cache
+             "opam install -y odoc-driver sherlodoc";
            run
-             "cp $(opam config var bin)/odoc $(opam config var bin)/voodoo-gen \
-              /home/opam";
+             "cp $(opam config var bin)/odoc_driver $(opam config var bin)/sherlodoc /home/opam";
          ]
-
-  let digest t = Git.Commit_id.hash t.commit ^ Config.odoc t.config
-  let commit t = t.commit
+  
+  let digest v = Digest.string (v.odoc_pin ^ v.sherlodoc_pin)
+  let pin v = v.odoc_pin ^"+"^ v.sherlodoc_pin
 end

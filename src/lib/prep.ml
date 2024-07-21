@@ -2,6 +2,104 @@ let prep_version = "v3"
 let network = Misc.network
 let cache = Voodoo.cache
 
+module OpamPackage = struct
+  include OpamPackage
+
+  let to_yojson t = `String (OpamPackage.to_string t)
+
+  let of_yojson = function
+    | `String str -> (
+        match OpamPackage.of_string_opt str with
+        | Some x -> Ok x
+        | None -> Error "failed to parse version")
+    | _ -> Error "failed to parse version"
+end
+module OpamFiles = struct
+
+  type t = No_context
+
+  let id = "opam-files"
+
+  let auto_cancel = true
+
+  module Key = struct
+    type t = { repo : Current_git.Commit.t; packages : OpamPackage.t list }
+  
+    let digest { repo; packages } =
+      Current_git.Commit.hash repo ^ String.concat ";" (List.map OpamPackage.to_string packages)
+  end
+
+  module Value = struct
+    type t = (OpamPackage.t * (bool * string)) list
+    [@@deriving yojson]
+
+    let marshal t = t |> to_yojson |> Yojson.Safe.to_string
+    let unmarshal t = t |> Yojson.Safe.from_string |> of_yojson |> Result.get_ok
+
+  end
+
+  let pool = Current.Pool.create ~label:"git_pool" 5
+
+
+  
+let build _ job { Key.repo; packages } =
+  let package_path pkg =
+    Fpath.(v "packages" / (OpamPackage.name pkg |> OpamPackage.Name.to_string) / OpamPackage.to_string pkg)
+  in
+  let open Lwt.Infix in
+  Current.Job.start ~pool ~level:Harmless job >>= fun () ->
+  Current_git.with_checkout ~job repo (fun path ->
+    Current.Process.with_tmpdir ~prefix:"opam-files" (fun fp ->
+      let open Lwt.Infix in
+      let r = Lwt_list.map_s (fun pkg ->
+        let open Lwt.Syntax in
+        let tarfile = Fpath.(fp / (Fmt.str "%s-opam.tar.bz2" (OpamPackage.to_string pkg))) in
+        let has_depext =
+          match Bos.OS.File.read Fpath.(path // package_path pkg / "opam") with
+          | Ok content ->
+            let f = OpamFile.OPAM.read_from_string content in
+            OpamFile.OPAM.depexts f <> []
+          | _ -> false
+        in
+        let command =
+          Bos.Cmd.(
+            v "tar"
+            % "-C"
+            % Fpath.to_string path
+            % "-jcf"
+            % Fpath.to_string tarfile
+            % (Fpath.to_string (package_path pkg) )
+          )
+        in
+        Current.Job.log job "About to exec";
+        let* res = Current.Process.exec ~cancellable:true ~job
+        ("", Bos.Cmd.to_list command |> Array.of_list) in
+        Current.Job.log job "Finished";
+
+        match res with
+      | Ok () -> begin
+        let res = Bos.OS.File.read tarfile in
+        match res with
+        | Ok contents -> Lwt.return_ok (pkg, (has_depext, Base64.encode_string contents))
+        | Error (`Msg m) -> Lwt.return_error (`Msg m)
+        end
+      | Error (`Msg m) -> Lwt.return_error (`Msg m)
+      ) packages in
+      r >>= fun pkgs ->
+      Lwt.return (Ok (List.filter_map (function | Ok x -> Some x | _ -> None) pkgs))
+      
+      ))
+
+  let pp f { Key.repo; packages } =
+    Fmt.pf f "opamfiles\n%a\n%a" Current_git.Commit.pp_short repo
+      (Fmt.list (Fmt.of_to_string OpamPackage.to_string)) packages
+
+end
+
+module type F = Current_cache.S.BUILDER
+
+module OpamFilesCache = Current_cache.Make (OpamFiles)
+
 let not_base x =
   not
     (List.mem
@@ -16,6 +114,23 @@ let not_base x =
          "ocaml-variants";
        ])
 
+let add_base ocaml_version init =
+  let add_one x pkgs =
+    if List.mem x pkgs then pkgs else x :: pkgs
+  in
+  let mk n v =
+    OpamPackage.create
+      (OpamPackage.Name.of_string n)
+      (OpamPackage.Version.of_string v)
+  in
+  List.fold_right add_one [
+    mk "base-unix" "base";
+    mk "base-bigarray" "base";
+    mk "base-threads" "base";
+    mk "ocaml-base-compiler" ocaml_version;
+    mk "ocaml" ocaml_version;
+  ] init
+
 (* association list from package to universes encoded as "<PKG>:<UNIVERSE HASH>,..."
    to be consumed by voodoo-prep *)
 let universes_assoc packages =
@@ -26,16 +141,18 @@ let universes_assoc packages =
          name ^ ":" ^ hash)
   |> String.concat ","
 
-let spec ~ssh ~voodoo ~base ~(install : Package.t) (prep : Package.t list) =
+let spec ~ssh ~voodoo ~base ~(install : Package.t) ~opamfiles (prep : Package.t list) =
   let open Obuilder_spec in
   (* the list of packages to install (which is a superset of the packages to prep) *)
   let all_deps = Package.all_deps install in
-  let packages_str =
+
+  let ocaml_version = Package.ocaml_version install in
+
+  let packages_str_list =
     all_deps
+    |> Package.topo_sort
     |> List.map Package.opam
     |> List.filter not_base
-    |> List.map OpamPackage.to_string
-    |> String.concat " "
   in
 
   (* Only enable dune cache for dune >= 2.1 - to remove errors like:
@@ -61,24 +178,6 @@ let spec ~ssh ~voodoo ~base ~(install : Package.t) (prep : Package.t list) =
                >= 0
            | _ -> false)
   in
-  (* split install in two phases, the first installs the build system to favor cache sharing *)
-  let build_preinstall =
-    List.filter
-      (fun pkg ->
-        let name = pkg |> Package.opam |> OpamPackage.name_to_string in
-        name = "dune" || name = "ocamlfind")
-      all_deps
-    |> function
-    | [] -> comment "no build system"
-    | lst ->
-        let packages_str =
-          lst
-          |> List.sort Package.compare
-          |> List.map (fun pkg -> Package.opam pkg |> OpamPackage.to_string)
-          |> String.concat " "
-        in
-        run ~network ~cache "opam install %s" packages_str
-  in
 
   let prep_storage_folders = List.rev_map (fun p -> (Storage.Prep, p)) prep in
 
@@ -92,57 +191,67 @@ let spec ~ssh ~voodoo ~base ~(install : Package.t) (prep : Package.t list) =
     Storage.for_all prep_storage_folders command
   in
 
+  let install_opamfiles tar_b64 =
+    run "(echo \"%s\" | base64 -d | sudo tar -jxvC /src)" tar_b64
+  in
   let tools = Voodoo.Prep.spec ~base voodoo |> Spec.finish in
   base
   |> Spec.children ~name:"tools" tools
   |> Spec.add
-       [
+       ([
          (* Install required packages *)
          run "sudo mkdir /src";
-         copy [ "packages" ] ~dst:"/src/packages";
-         copy [ "repo" ] ~dst:"/src/repo";
+         run "echo b3BhbS12ZXJzaW9uOiAiMi4wIgpicm93c2U6ICJodHRwczovL29wYW0ub2NhbWwub3JnL3BrZy8iCnVwc3RyZWFtOiAiaHR0cHM6Ly9naXRodWIuY29tL29jYW1sL29wYW0tcmVwb3NpdG9yeS90cmVlL21hc3Rlci8iCmFubm91bmNlOiBbCiIiIgpbV0FSTklOR10gb3BhbSBpcyBvdXQtb2YtZGF0ZS4gUGxlYXNlIGNvbnNpZGVyIHVwZGF0aW5nIGl0IChodHRwczovL29wYW0ub2NhbWwub3JnL2RvYy9JbnN0YWxsLmh0bWwpCiIiIiB7KG9wYW0tdmVyc2lvbiA+PSAiMi4xLjB+fiIgJiBvcGFtLXZlcnNpb24gPCAiMi4xLjUiKSB8IG9wYW0tdmVyc2lvbiA8ICIyLjAuMTAifQoiIiIKW0lORk9dIG9wYW0gMi4xIGluY2x1ZGVzIG1hbnkgcGVyZm9ybWFuY2UgaW1wcm92ZW1lbnRzIG92ZXIgMi4wOyBwbGVhc2UgY29uc2lkZXIgdXBncmFkaW5nIChodHRwczovL29wYW0ub2NhbWwub3JnL2RvYy9JbnN0YWxsLmh0bWwpCiIiIiB7b3BhbS12ZXJzaW9uID49ICIyLjAuMTAiICYgb3BhbS12ZXJzaW9uIDwgIjIuMS4wfn4ifQpdCg== | base64 -d | sudo tee /src/repo";
+         run "ls -lR /src";
          (* Re-initialise opam after switching from opam.2.0 to 2.1. *)
          run ~network
-           "sudo ln -f /usr/bin/opam-2.1 /usr/bin/opam && opam init --reinit \
+           "sudo ln -f /usr/bin/opam-2.1 /usr/bin/opam && opam repo remove default --all && opam init --reinit \
             -ni";
-         run "opam repo remove default && opam repo add opam /src";
+         run "sudo mkdir /src/packages";
+         run "opam repo add opam /src";
          copy ~from:(`Build "tools")
            [ "/home/opam/voodoo-prep" ]
            ~dst:"/home/opam/";
-         (* Pre-install build tools *)
-         build_preinstall;
          (* Enable build cache conditionally on dune version *)
          env "DUNE_CACHE" (if dune_cache_enabled then "enabled" else "disabled");
          env "DUNE_CACHE_TRANSPORT" "direct";
          env "DUNE_CACHE_DUPLICATION" "copy";
+       ] @ 
+         List.flatten (List.map (fun pkg ->
+          match List.assoc_opt pkg opamfiles with
+          | Some (_has_depext, opamfiles) ->
+              [ install_opamfiles opamfiles ]
+          | _ -> []) (add_base ocaml_version [])
+           ) @
          (* Intall packages. Recover in case of failure. *)
-         run ~network ~cache "%s"
-         @@ Misc.Cmd.list
-              [
-                "sudo apt update";
-                Fmt.str
-                  "(opam depext -viy %s 2>&1 | tee ~/opam.err.log) || echo \
-                   'Failed to install all packages'"
-                  packages_str;
-              ];
-         (* Perform the prep step for all packages *)
+         List.flatten (List.map (fun pkg ->
+            match List.assoc_opt pkg opamfiles with
+            | Some (has_depext, opamfiles) ->
+              [ install_opamfiles opamfiles;
+                run ~network ~cache "(opam update && opam install -vv --debug-level=2 %s --confirm-level=unsafe-yes --solver=builtin-0install %s 2>&1 && opam clean -s | tee ~/opam.err.log) || echo \
+                      'Failed to install all packages'" (if has_depext then "" else "--no-depexts") (OpamPackage.to_string pkg)
+              ]
+            | None -> [ run "echo Failed to find opamfiles for %s" (OpamPackage.to_string pkg) ]) packages_str_list)
+        @ [
+        (* Perform the prep step for all packages *)
          run "opam exec -- ~/voodoo-prep -u %s" (universes_assoc prep);
          (* Extract artifacts  - cache needs to be invalidated if we want to be able to read the logs *)
-         run ~network ~secrets:Config.Ssh.secrets "%s"
-         @@ Misc.Cmd.list
-              [
-                Fmt.str "echo '%f'" (Random.float 1.);
-                create_dir_and_copy_logs_if_not_exist;
+         ] @
+          
+                (List.map (run ~network ~secrets:Config.Ssh.secrets "%s")
+                  (create_dir_and_copy_logs_if_not_exist))
+          @ 
+
                 (* Extract *)
-                Storage.for_all prep_storage_folders
+                (List.map (run ~network ~secrets:Config.Ssh.secrets "%s") (Storage.for_all prep_storage_folders
                   (Fmt.str "rsync -aR --no-p ./$1 %s:%s/.;"
                      (Config.Ssh.host ssh)
-                     (Config.Ssh.storage_folder ssh));
+                     (Config.Ssh.storage_folder ssh))))
+          @ (List.map (run ~network ~secrets:Config.Ssh.secrets "%s")
                 (* Compute hashes *)
-                Storage.for_all prep_storage_folders
-                  (Storage.Tar.hash_command ~prefix:"HASHES" ());
-              ];
-       ]
+                (Storage.for_all prep_storage_folders
+                  (Storage.Tar.hash_command ~prefix:"HASHES" ()));
+       ))
 
 module Prep = struct
   type t = No_context
@@ -156,9 +265,10 @@ module Prep = struct
       base : Spec.t;
       voodoo : Voodoo.Prep.t;
       config : Config.t;
+      opamfiles : (OpamPackage.t * (bool * string)) list
     }
 
-    let digest { job = { install; prep }; voodoo; base = _; config = _ } =
+    let digest { job = { install; prep }; voodoo; base = _; config = _; opamfiles = _ } =
       (* base is derived from 'prep' so we don't need to include it in the hash *)
       Fmt.str "%s\n%s\n%s\n%s" prep_version (Package.digest install)
         (Voodoo.Prep.digest voodoo)
@@ -179,7 +289,7 @@ module Prep = struct
     let unmarshal t = t |> Yojson.Safe.from_string |> of_yojson |> Result.get_ok
   end
 
-  let build No_context job Key.{ job = { install; prep }; base; voodoo; config }
+  let build No_context job Key.{ job = { install; prep }; base; voodoo; config; opamfiles }
       =
     let open Lwt.Syntax in
     let ( let** ) = Lwt_result.bind in
@@ -188,22 +298,16 @@ module Prep = struct
        requires changes in the solver.
        For now we rebuild only if voodoo-prep changes.
     *)
-    let spec = spec ~ssh:(Config.ssh config) ~voodoo ~base ~install prep in
+    let spec = spec ~ssh:(Config.ssh config) ~voodoo ~base ~install ~opamfiles prep in
     let action = Misc.to_ocluster_submission spec in
-    let commit_id =
-      Current_git.Commit_id.v
-        ~repo:"https://github.com/ocaml/opam-repository.git" ~gref:"master"
-        ~hash:(Package.commit install)
-    in
-    let src =
-      ( "https://github.com/ocaml/opam-repository.git",
-        [ Package.commit install ] )
-    in
     let version = Misc.cache_hint install in
+    Current.Job.log job "Prep job: install %a" Package.pp install;
+    Current.Job.log job "Prep job: prep %a" (Fmt.list Package.pp) prep;
+
     let cache_hint = "docs-universe-prep-" ^ version in
     let build_pool =
       Current_ocluster.Connection.pool ~job ~pool:(Config.pool config) ~action
-        ~cache_hint ~src
+        ~cache_hint
         ~secrets:(Config.Ssh.secrets_values (Config.ssh config))
         (Config.ocluster_connection_prep config)
     in
@@ -215,13 +319,11 @@ module Prep = struct
       (Fmt.str
          "@.To reproduce locally:@.@.cat > prep.spec \
           <<'END-OF-SPEC'@.\o033[34m%s\o033[0m@.END-OF-SPEC@.@.ocluster-client \
-          submit-obuilder %s %s --local-file prep.spec \\@.--pool linux-x86_64 \
+          submit-obuilder --local-file prep.spec \\@.--pool linux-x86_64 \
           --connect ocluster-submission.cap --cache-hint %s \\@.--secret \
           ssh_privkey:id_rsa --secret ssh_pubkey:id_rsa.pub--secret \
           ssh_config:ssh_config@.@."
          (Spec.to_spec spec)
-         (Current_git.Commit_id.repo commit_id)
-         (Current_git.Commit_id.hash commit_id)
          cache_hint);
 
     Capnp_rpc_lwt.Capability.with_ref build_job @@ fun build_job ->
@@ -327,11 +429,26 @@ let combine ~base ~(job : Jobs.t) (artifacts_branches_output, failed_branches) =
          | None -> None)
   |> Package.Map.of_seq
 
+let weekly = Current_cache.Schedule.v ~valid_for:(Duration.of_day 7) ()
+
 let v ~config ~voodoo ~spec (job : Jobs.t) =
   let open Current.Syntax in
+  let repo_opam =
+    Current_git.clone ~schedule:weekly
+      "https://github.com/ocaml/opam-repository.git"
+  in
+  let ocaml_version = Package.ocaml_version job.install in
+
+  let opamfiles = 
+    Current.component "opamfiles %s" (job.install |> Package.digest) |>
+    let> repo_opam in
+    let packages = Package.all_deps job.install |> List.map Package.opam in
+    let packages = add_base ocaml_version packages in
+    OpamFilesCache.get No_context OpamFiles.Key.{ repo = repo_opam; packages }
+  in
   Current.component "voodoo-prep %s" (job.install |> Package.digest)
-  |> let> voodoo and> spec in
-     PrepCache.get No_context { job; voodoo; config; base = spec }
+  |> let> voodoo and> spec and> opamfiles in
+     PrepCache.get No_context { job; voodoo; config; base = spec; opamfiles }
      |> Current.Primitive.map_result (Result.map (combine ~base:spec ~job))
 
 let extract ~(job : Jobs.t) (prep : prep Current.t) =

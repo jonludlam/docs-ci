@@ -16,7 +16,7 @@ end
 module Selection = struct
   type t = {
     id : string;  (** The platform ID from the request. *)
-    packages : (string * string list) list;
+    packages : (string * string * string list) list;
         (** The selected packages ("name.version") and their universes. *)
     commit : string;  (** A commit in opam-repository to use. *)
   }

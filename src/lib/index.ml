@@ -108,7 +108,7 @@ let db =
      and record_pipeline =
        Sqlite3.prepare db
          "INSERT INTO docs_ci_pipeline_index (epoch_html, epoch_linked, \
-          voodoo_do, voodoo_gen, voodoo_prep, voodoo_branch, voodoo_repo, \
+          voodoo_do, voodoo_prep, voodoo_branch, voodoo_repo, \
           odoc_commit) VALUES (?, ?, ?, ?, ?, ?, ?, ?) returning id"
      and get_recent_pipeline_ids =
        Sqlite3.prepare db
@@ -127,7 +127,7 @@ let db =
           pipeline_id = ?"
      and get_pipeline_data =
        Sqlite3.prepare db
-         "SELECT epoch_html, epoch_linked, voodoo_do, voodoo_gen, voodoo_prep, \
+         "SELECT epoch_html, epoch_linked, voodoo_do, voodoo_prep, \
           voodoo_branch, voodoo_repo, odoc_commit FROM docs_ci_pipeline_index \
           WHERE id = ?"
      in
@@ -162,7 +162,7 @@ let record package pipeline_id package_status step_list =
         INT (pipeline_id |> Int64.of_int);
       ]
 
-let record_new_pipeline ~voodoo_do_commit ~voodoo_gen_commit ~voodoo_prep_commit
+let record_new_pipeline ~voodoo_do_commit ~voodoo_prep_commit
     ~odoc_commit ~voodoo_repo ~voodoo_branch ~epoch_html ~epoch_linked =
   let t = Lazy.force db in
   match
@@ -172,7 +172,6 @@ let record_new_pipeline ~voodoo_do_commit ~voodoo_gen_commit ~voodoo_prep_commit
           TEXT epoch_html;
           TEXT epoch_linked;
           TEXT voodoo_do_commit;
-          TEXT voodoo_gen_commit;
           TEXT voodoo_prep_commit;
           TEXT voodoo_branch;
           TEXT voodoo_repo;
@@ -231,7 +230,6 @@ type pipeline_data = {
   epoch_html : string;
   epoch_linked : string;
   voodoo_do : string;
-  voodoo_gen : string;
   voodoo_prep : string;
   voodoo_branch : string;
   voodoo_repo : string;
@@ -260,7 +258,6 @@ let get_pipeline_data pipeline_id =
              TEXT epoch_html;
              TEXT epoch_linked;
              TEXT voodoo_do;
-             TEXT voodoo_gen;
              TEXT voodoo_prep;
              NULL;
              (* these are new nullable columns so this option is for backward compatibility *)
@@ -270,7 +267,6 @@ let get_pipeline_data pipeline_id =
            ( epoch_html,
              epoch_linked,
              voodoo_do,
-             voodoo_gen,
              voodoo_prep,
              "",
              "",
@@ -280,7 +276,6 @@ let get_pipeline_data pipeline_id =
              TEXT epoch_html;
              TEXT epoch_linked;
              TEXT voodoo_do;
-             TEXT voodoo_gen;
              TEXT voodoo_prep;
              TEXT voodoo_branch;
              TEXT voodoo_repo;
@@ -289,7 +284,6 @@ let get_pipeline_data pipeline_id =
            ( epoch_html,
              epoch_linked,
              voodoo_do,
-             voodoo_gen,
              voodoo_prep,
              voodoo_branch,
              voodoo_repo,
@@ -301,7 +295,6 @@ let get_pipeline_data pipeline_id =
    ( epoch_html,
      epoch_linked,
      voodoo_do,
-     voodoo_gen,
      voodoo_prep,
      voodoo_branch,
      voodoo_repo,
@@ -312,7 +305,6 @@ let get_pipeline_data pipeline_id =
           epoch_html;
           epoch_linked;
           voodoo_do;
-          voodoo_gen;
           voodoo_prep;
           voodoo_branch;
           voodoo_repo;

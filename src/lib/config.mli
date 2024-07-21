@@ -21,6 +21,9 @@ val ssh : t -> Ssh.t
 val odoc : t -> string
 (** Odoc version pin to use. *)
 
+val sherlodoc : t -> string
+(** Sherlodoc version to use *)
+
 val pool : t -> string
 (** The ocluster pool to use *)
 

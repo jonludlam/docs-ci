@@ -19,6 +19,8 @@ and Package : sig
 end
 
 type t = Package.t
+val to_yojson : t -> Yojson.Safe.t
+val of_yojson : Yojson.Safe.t -> t Ppx_deriving_yojson_runtime.error_or
 
 val make :
   blacklist:string list ->
@@ -39,6 +41,8 @@ val universe : t -> Universe.t
 val digest : t -> string
 val commit : t -> string
 val id : t -> string
+val topo_sort : t list -> t list
+val ocaml_version : t -> string
 
 module Map : Map.S with type key = t
 module Set : Set.S with type elt = t

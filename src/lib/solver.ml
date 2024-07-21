@@ -69,7 +69,8 @@ let perform_constrained_solve ~solver ~pool ~job ~(platform : Platform.t) ~opam
       | Ok [ x ] ->
           let solution =
             List.map
-              (fun (a, b) ->
+              (fun (a, opamfile, b) ->
+                Current.Job.log job "Got opam file: %s\n%!" opamfile;
                 (OpamPackage.of_string a, List.map OpamPackage.of_string b))
               x.packages
           in
@@ -106,7 +107,10 @@ module Cache = struct
 
   let id = "solver-cache-" ^ solver_version
 
+  type ('a, 'b) result = ('a, 'b) Result.t = Ok of 'a | Error of 'b [@@deriving yojson]
+
   type cache_value = (Package.t, string) result
+  [@@deriving yojson]
 
   let fname = fname id
 
@@ -120,16 +124,21 @@ module Cache = struct
     let fname = fname track in
     let _ = Bos.OS.Dir.create (fst (Fpath.split_base fname)) |> Result.get_ok in
     let file = open_out (Fpath.to_string fname) in
-    Marshal.to_channel file value [];
+    let json = cache_value_to_yojson value in
+    Printf.fprintf file "%s" (Yojson.Safe.to_string json);
     close_out file
 
   let read track : cache_value option =
     let fname = fname track in
     try
       let file = open_in (Fpath.to_string fname) in
-      let result = Marshal.from_channel file in
+      let yj = Yojson.Safe.from_channel file in
       close_in file;
-      Some result
+      match cache_value_of_yojson yj with
+      | Ok result -> 
+        Some result
+      | Error _ ->
+        None
     with Failure _ | Sys_error _ -> None
 end
 

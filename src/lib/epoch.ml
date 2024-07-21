@@ -12,7 +12,7 @@ let digest stage t =
         Fmt.str "%s:%s:%s:%s:%s" version (Config.odoc t.config)
           Voodoo.Do.(v t.voodoo |> digest)
           Voodoo.Prep.(v t.voodoo |> digest)
-          Voodoo.Gen.(v t.voodoo |> digest)
+          Voodoo.OdocDriver.(v ~odoc_pin:(Config.odoc t.config) ~sherlodoc_pin:(Config.sherlodoc t.config) |> digest)
     | `Linked ->
         Fmt.str "%s:%s:%s:%s" version (Config.odoc t.config)
           Voodoo.Do.(v t.voodoo |> digest)
@@ -22,10 +22,9 @@ let digest stage t =
 
 let pp f t =
   Fmt.pf f
-    "docs-ci: %s\nodoc: %s\nvoodoo do: %a\nvoodoo prep: %a\nvoodoo gen: %a"
+    "docs-ci: %s\nodoc: %s\nvoodoo do: %a\nvoodoo prep: %a\nvoodoo gen: %s"
     version (Config.odoc t.config) Current_git.Commit_id.pp
     Voodoo.Do.(v t.voodoo |> commit)
     Current_git.Commit_id.pp
     Voodoo.Prep.(v t.voodoo |> commit)
-    Current_git.Commit_id.pp
-    Voodoo.Gen.(v t.voodoo |> commit)
+    Voodoo.OdocDriver.(v ~odoc_pin:(Config.odoc t.config) ~sherlodoc_pin:(Config.sherlodoc t.config) |> pin)

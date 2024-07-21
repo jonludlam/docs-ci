@@ -15,7 +15,7 @@ end
 
 (* [for_all repo packages command] is a command that executes [command] for all [packages] folders in [repo].
    $1 contains the folder. $2 contains the package id. *)
-val for_all : (repository * Package.t) list -> string -> string
+val for_all : (repository * Package.t) list -> string -> string list
 
 type id_hash = { id : string; hash : string } [@@deriving yojson]
 

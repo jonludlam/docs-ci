@@ -152,7 +152,6 @@ module Pipeline = struct
     let epoch_linked = epoch_linked_get h in
     let voodoo_do = voodoo_do_commit_get h in
     let voodoo_prep = voodoo_prep_commit_get h in
-    let voodoo_gen = voodoo_gen_commit_get h in
     let voodoo_branch = voodoo_branch_get h in
     let voodoo_repo = voodoo_repo_get h in
     let odoc_commit = odoc_commit_get h in
@@ -165,7 +164,6 @@ module Pipeline = struct
         ("epoch_linked", `String epoch_linked);
         ("voodoo_do", `String voodoo_do);
         ("voodoo_prep", `String voodoo_prep);
-        ("voodoo_gen", `String voodoo_gen);
         ("odoc", `String odoc_commit);
         ("voodoo_repo", `String voodoo_repo);
         ("voodoo_branch", `String voodoo_branch);
