@@ -64,8 +64,8 @@ let rec summarise description arr = function
         items
       |> current_list_flatten
 
-let compile ~generation ~config ~voodoo_gen ~voodoo_do
-    ~(blessed : Package.Blessing.Set.t Current.t OpamPackage.Map.t) ~pipeline_id
+let compile ~generation ~config ~voodoo_do
+    ~(blessed : Package.Blessing.Set.t Current.t OpamPackage.Map.t) ~pipeline_id:_
     (preps : (Prep.prep Current.t * Prep.t Current.t) Package.Map.t) =
   let compilation_jobs = ref Package.Map.empty in
 
@@ -126,7 +126,7 @@ let compile ~generation ~config ~voodoo_gen ~voodoo_do
   in
   let get_compilation_node package _ =
     get_compilation_job package
-    |> Option.map @@ fun (compile, monitor) ->
+    (* |> Option.map @@ fun (compile, monitor) ->
        let node =
          Html.v ~generation ~config
            ~name:(package |> Package.opam |> OpamPackage.to_string)
@@ -144,14 +144,14 @@ let compile ~generation ~config ~voodoo_gen ~voodoo_do
          let+ pipeline_id in
          Index.record package pipeline_id package_status []
        in
-       (node, monitor)
+       (node, monitor) *)
   in
   Package.Map.filter_map get_compilation_node preps |> Package.Map.bindings
 
 let blacklist =
   [
-    "ocaml-secondary-compiler";
-    "ocamlfind-secondary";
+    (* "ocaml-secondary-compiler"; *)
+    (* "ocamlfind-secondary"; *)
     "ocaml-src";
     "ocaml-freestanding";
     "dkml-component-staging-ocamlrun";
@@ -245,7 +245,6 @@ let v ~config ~opam ~monitor ~migrations () =
   let voodoo = Voodoo.v config in
   let ssh = Config.ssh config in
   let v_do = Current.map Voodoo.Do.v voodoo in
-  let v_gen = Current.map Voodoo.Gen.v voodoo in
   let v_prep = Current.map Voodoo.Prep.v voodoo in
   let migrations =
     match migrations with
@@ -369,7 +368,7 @@ let v ~config ~opam ~monitor ~migrations () =
   (* 7) Odoc compile and html-generate artifacts *)
   let html, html_input_node, package_pipeline_tree =
     let compile_monitor =
-      compile ~generation ~config ~voodoo_do:v_do ~voodoo_gen:v_gen ~blessed
+      compile ~generation ~config ~voodoo_do:v_do ~blessed
         ~pipeline_id prepped'
     in
     Log.info (fun f ->
@@ -408,7 +407,7 @@ let v ~config ~opam ~monitor ~migrations () =
       Package.Map.bindings html
       |> List.map (fun (_, html_current) ->
              html_current
-             |> Current.map (fun t -> (Html.hashes t).html_raw_hash)
+             |> Current.map (fun t -> (Compile.hashes t).html_hash)
              |> Current.state ~hidden:true)
       |> Current.list_seq
       |> Current.map (List.filter_map Result.to_option)
