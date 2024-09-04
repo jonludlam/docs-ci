@@ -1,5 +1,5 @@
 module Base = struct
-  type repository = HtmlRaw of Epoch.t | Linked of Epoch.t | Compile | Prep
+  type repository = HtmlRaw of Epoch.t | Linked of Epoch.t | Compile | Prep | Prep0
 
   let generation_folder stage generation =
     Fpath.(v ("epoch-" ^ Epoch.digest stage generation))
@@ -11,6 +11,7 @@ module Base = struct
         Fpath.(generation_folder `Linked generation / "linked")
     | Compile -> Fpath.v "compile"
     | Prep -> Fpath.v "prep"
+    | Prep0 -> Fpath.v "prep0"
 end
 
 type repository =
@@ -18,12 +19,14 @@ type repository =
   | Linked of (Epoch.t * Package.Blessing.t)
   | Compile of Package.Blessing.t
   | Prep
+  | Prep0
 
 let to_base_repo = function
   | HtmlRaw (t, _) -> Base.HtmlRaw t
   | Linked (t, _) -> Linked t
   | Compile _ -> Compile
   | Prep -> Prep
+  | Prep0 -> Prep0
 
 let base_folder ~blessed ~prep package =
   let universes = if prep then "universes" else "u" in
@@ -39,6 +42,7 @@ let folder repository package =
     match repository with
     | HtmlRaw (_, b) | Linked (_, b) | Compile b -> b
     | Prep -> Universe
+    | Prep0 -> Universe
   in
   let blessed = blessed = Blessed in
   Fpath.(
