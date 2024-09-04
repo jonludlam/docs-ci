@@ -3,11 +3,12 @@ type repository =
   | Linked of (Epoch.t * Package.Blessing.t)
   | Compile of Package.Blessing.t
   | Prep
+  | Prep0
 
 val folder : repository -> Package.t -> Fpath.t
 
 module Base : sig
-  type repository = HtmlRaw of Epoch.t | Linked of Epoch.t | Compile | Prep
+  type repository = HtmlRaw of Epoch.t | Linked of Epoch.t | Compile | Prep | Prep0
 
   val folder : repository -> Fpath.t
   val generation_folder : Epoch.stage -> Epoch.t -> Fpath.t
