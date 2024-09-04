@@ -66,7 +66,7 @@ let rec summarise description arr = function
 
 let compile ~generation ~config ~voodoo_do
     ~(blessed : Package.Blessing.Set.t Current.t OpamPackage.Map.t) ~pipeline_id:_
-    (preps : (Prep.prep Current.t * Prep.t Current.t) Package.Map.t) =
+    (preps : (Prep.t Current.t Package.Map.t)) =
   let compilation_jobs = ref Package.Map.empty in
 
   let rec get_compilation_job package =
@@ -75,7 +75,7 @@ let compile ~generation ~config ~voodoo_do
     with Not_found ->
       let job =
         Package.Map.find_opt package preps
-        |> Option.map @@ fun (prep_node, prep) ->
+        |> Option.map @@ fun prep ->
            let dependencies =
              Package.universe package |> Package.Universe.deps
            in
@@ -102,20 +102,8 @@ let compile ~generation ~config ~voodoo_do
                Seq
                  [
                    ( "do-deps",
-                     And
-                       (("prep", Item prep_node)
-                       :: List.map
-                            (fun (pkg, compile) ->
-                              let dep_prep_node, _ =
-                                Package.Map.find pkg preps
-                              in
-                              ( "dep-compile " ^ Package.id pkg,
-                                And
-                                  [
-                                    ("prep", Item dep_prep_node);
-                                    ("compile", Item compile);
-                                  ] ))
-                            compile_dependencies_names) );
+                     Item prep);
+                       
                    ("do-compile", Item node);
                  ])
            in
@@ -147,6 +135,61 @@ let compile ~generation ~config ~voodoo_do
        (node, monitor) *)
   in
   Package.Map.filter_map get_compilation_node preps |> Package.Map.bindings
+
+
+let prep ~config ~voodoo_do
+  ~pipeline_id:_ ~opamfiles (all:Package.Set.t) =
+  let prep_jobs = ref Package.Map.empty in
+
+  let rec get_prep_job package =
+    Logs.info (fun m -> m "Getting prep job for package %s"
+      (package |> Package.opam |> OpamPackage.to_string));
+    try Package.Map.find package !prep_jobs
+    with Not_found ->
+      let job =
+        let dependencies =
+          Package.universe package |> Package.Universe.deps
+        in
+        let prep_dependencies =
+          List.map
+            get_prep_job
+            dependencies
+        in
+        let base_image = Misc.get_base_image (package :: dependencies) in
+        let node =
+          Prep.v ~config ~voodoo:voodoo_do
+              ~deps:(Current.list_seq prep_dependencies)
+              ~spec:base_image ~opamfiles ~prep:package
+          in
+          node
+      in
+      prep_jobs := Package.Map.add package job !prep_jobs;
+      job
+  in
+  let get_prep_node package =
+    get_prep_job package
+    (* |> Option.map @@ fun (compile, monitor) ->
+      let node =
+        Html.v ~generation ~config
+          ~name:(package |> Package.opam |> OpamPackage.to_string)
+          ~voodoo:voodoo_gen compile
+      in
+      let monitor =
+        match monitor with
+        | Monitor.Seq lst -> Monitor.Seq (lst @ [ ("do-html", Item node) ])
+        | _ -> assert false
+      in
+      let package_status = Monitor.pipeline_state monitor in
+      let _index =
+        (* let+ step_list = summarise "" [] monitor  *)
+        (* DEBUGGING THE MEMORY BLOAT -- Skip the summarising for now *)
+        let+ pipeline_id in
+        Index.record package pipeline_id package_status []
+      in
+      (node, monitor) *)
+  in
+  Package.Set.iter (fun x -> ignore (get_prep_node x)) all;
+  !prep_jobs
 
 let blacklist =
   [
@@ -210,20 +253,6 @@ let collapse_single ~key ~input list =
   let current, node = Current.collapse_list ~key ~value:"" ~input curr in
   (List.combine keys current, node)
 
-let prep_hierarchical_collapse ~input lst =
-  let package_name x =
-    x.Jobs.install |> Package.opam |> OpamPackage.name_to_string
-  in
-  let first_char x =
-    let name = x.Jobs.install |> Package.opam |> OpamPackage.name_to_string in
-    String.sub name 0 1 |> String.uppercase_ascii
-  in
-  let key = "prep" in
-  lst
-  |> collapse_by ~key ~input ~force_collapse:true package_name None
-  |> collapse_by ~key ~input first_char (Some package_name)
-  |> collapse_single ~key ~input
-
 let compile_hierarchical_collapse ~input lst =
   let package_universe = Fmt.to_to_string Package.pp in
   let package_name_version x = x |> Package.opam |> OpamPackage.to_string in
@@ -286,6 +315,7 @@ let v ~config ~opam ~monitor ~migrations () =
   let all_packages_jobs =
     solver_result |> Solver.keys |> List.rev_map Solver.get
   in
+  Log.info (fun f -> f "2.5) Solver result...");
   (* 3.b) Expand that list to all the obtainable package.version.universe *)
   let all_packages =
     (* TODO add a append-only layer at this step *)
@@ -294,34 +324,41 @@ let v ~config ~opam ~monitor ~migrations () =
     |> List.flatten
     |> Package.Set.of_list
   in
-  Log.info (fun f -> f "3) All packages");
+  Log.info (fun f -> f "3) All packages (%d)" (Package.Set.cardinal all_packages));
   (* 4) Schedule a somewhat small set of jobs to obtain at least one universe for each package.version *)
-  let jobs = Jobs.schedule ~targets:all_packages all_packages_jobs in
   (* 4a) Decide on a docker tag for each job *)
-  let jobs' = List.map (fun job -> (job, Misc.spec_of_job job)) jobs in
-  Log.info (fun f -> f "4) Jobs are scheduled");
   (* 5) Run the preparation step *)
-  let prepped =
-    jobs'
-    |> List.map (fun (job, spec) ->
-           (job, Prep.v ~config ~voodoo:v_prep ~spec job))
+
+  let weekly = Current_cache.Schedule.v ~valid_for:(Duration.of_day 7) () in
+
+  let repo_opam =
+    Current_git.clone ~schedule:weekly
+      "https://github.com/ocaml/opam-repository.git"
   in
-  let prepped' =
-    prepped
-    |> List.map (fun (job, result) ->
-           Prep.extract ~job result |> Package.Map.map (fun v -> (result, v)))
-    |> List.fold_left
-         (Package.Map.union (fun _ _ _ ->
-              failwith "Two jobs prepare the same package."))
-         Package.Map.empty
+
+  let opamfiles = 
+    Current.component "opamfiles" |>
+    let> repo_opam in
+    let packages = Package.Set.to_list all_packages |> List.map Package.opam in
+    let extra = [
+      "ocaml-options-vanilla.1";
+      "base-bigarray.base";
+      "base-domains.base";
+      "base-nnp.base";
+      "host-arch-x86_64.1";
+      "host-system-other.1";
+    ] in
+    let packages = List.rev_append (List.map OpamPackage.of_string extra) packages in
+    Prep.OpamFilesCache.get No_context Prep.OpamFiles.Key.{ repo = repo_opam; packages }
   in
-  let prep_nodes =
-    Package.Map.fold
-      (fun package (prep_job, _) opam_map ->
-        let opam = Package.opam package in
-        OpamPackage.Map.update opam (List.cons (package, prep_job)) [] opam_map)
-      prepped' OpamPackage.Map.empty
+
+  let prepped' : Prep.t Current.t Package.Map.t =
+    prep ~config ~voodoo_do:v_prep
+    ~pipeline_id ~opamfiles all_packages
   in
+  Log.info (fun f ->
+    f ".. %d prepped nodes" (Package.Map.cardinal prepped'));
+
   Log.info (fun f -> f "5) Prep nodes");
   (* 6) Promote packages to the main tree *)
   let blessed =
@@ -340,10 +377,10 @@ let v ~config ~opam ~monitor ~migrations () =
     in
     let by_opam_package =
       Package.Map.fold
-        (fun package (_, job) opam_map ->
+        (fun package prep opam_map ->
           let opam = Package.opam package in
           let job =
-            let+ job = Current.state ~hidden:true job in
+            let+ job = Current.state ~hidden:true prep in
             (package, job)
           in
           OpamPackage.Map.update opam (List.cons job) [] opam_map)
@@ -394,7 +431,7 @@ let v ~config ~opam ~monitor ~migrations () =
     Log.info (fun f ->
         f "7.b) Inform the monitor: successes %i, failures %i" successes
           (List.length solver_failures));
-    Monitor.register monitor solver_failures prep_nodes blessed
+    Monitor.register monitor solver_failures OpamPackage.Map.empty blessed
       package_pipeline_tree
   in
   Log.info (fun f -> f "7.b) Inform monitor");
