@@ -283,6 +283,8 @@ module Compile = struct
     let package = Prep.package prep in
     let odoc_pin = Config.odoc config in
     let sherlodoc_pin = Config.sherlodoc config in
+    Current.Job.write job
+      (Fmt.str "Prep base: %s" (Spec.to_spec (Prep.base prep)));
     let** spec =
       match Prep.result prep with
       | Success ->
@@ -352,7 +354,8 @@ let v ~generation ~config ~name ~voodoo ~blessing ~deps prep =
      and> odoc_driver_base = Misc.default_base_image in
      let package = Prep.package prep in
      let base = Prep.base prep in
-     
+     (Logs.debug (fun m -> m "Prep base: %s" (Spec.to_spec base)));
+
      let output =
        CompileCache.get { Compile.generation }
          Compile.Key.{ prep; blessing; voodoo; deps; config; base; odoc_driver_base }

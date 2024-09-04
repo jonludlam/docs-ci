@@ -165,7 +165,10 @@ module Prep = struct
              "sudo apt-get update && sudo apt-get install -yy m4 pkg-config";
            run ~network ~cache "opam pin -ny %s  && opam depext -iy voodoo-prep"
              (remote_uri t);
-           run "cp $(opam config var bin)/voodoo-prep /home/opam";
+           run ~network ~cache
+             "opam pin -ny opamh %s"
+             "https://github.com/jonludlam/opamh.git#7ebcd46af7615ada41e2e3b46f834bd460af7bc0 && opam install -y opamh";
+           run "cp $(opam config var bin)/voodoo-prep $(opam config var bin)/opamh /home/opam";
          ]
 
   let digest = Git.Commit_id.hash
@@ -221,6 +224,7 @@ module OdocDriver = struct
              "opam install -y odoc-driver sherlodoc";
            run
              "cp $(opam config var bin)/odoc_driver $(opam config var bin)/sherlodoc /home/opam";
+            
          ]
   
   let digest v = Digest.string (v.odoc_pin ^ v.sherlodoc_pin)

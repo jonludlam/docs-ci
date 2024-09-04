@@ -122,8 +122,15 @@ let topo_sort packages =
 let all_deps pkg = pkg :: (pkg |> universe |> Universe.deps)
 
 let ocaml_version pkg =
-  pkg |> universe |> Universe.deps |> List.map opam |> List.find 
-    (fun p -> OpamPackage.name_to_string p = "ocaml-base-compiler") |> OpamPackage.version_to_string
+  try
+    pkg |> universe |> Universe.deps |> List.map opam |> List.find 
+      (fun p -> OpamPackage.name_to_string p = "ocaml-base-compiler") |> OpamPackage.version_to_string
+  with Not_found ->
+    if OpamPackage.name_to_string (opam pkg) = "ocaml-base-compiler" then
+      opam pkg |> OpamPackage.version_to_string
+    else
+      (Logs.debug (fun m -> m "Failed to find ocaml version");
+      Ocaml_version.Releases.latest |> Ocaml_version.to_string)
 
 module PackageMap = Map.Make (Package)
 module PackageSet = Set.Make (Package)
