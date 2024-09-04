@@ -69,7 +69,7 @@ let perform_constrained_solve ~solver ~pool ~job ~(platform : Platform.t) ~opam
       | Ok [ x ] ->
           let solution =
             List.map
-              (fun (a, b) ->
+              (fun (a, _opamfile, b) ->
                 (OpamPackage.of_string a, List.map OpamPackage.of_string b))
               x.packages
           in
@@ -121,7 +121,19 @@ module Cache = struct
     let _ = Bos.OS.Dir.create (fst (Fpath.split_base fname)) |> Result.get_ok in
     let file = open_out (Fpath.to_string fname) in
     Marshal.to_channel file value [];
-    close_out file
+    close_out file;
+    let fname_hum = Fpath.set_ext ".hum" fname in
+    let oc = open_out (Fpath.to_string fname_hum) in
+    let _ =
+      match value with
+      | Error _ -> Printf.fprintf oc "Failed"
+      | Ok pkg ->
+        let all = Package.all_deps pkg in
+        List.iter (fun pkg ->
+          let opam = Package.opam pkg in
+          Printf.fprintf oc "%s\n" (OpamPackage.to_string opam)) all
+    in
+    close_out oc
 
   let read track : cache_value option =
     let fname = fname track in
