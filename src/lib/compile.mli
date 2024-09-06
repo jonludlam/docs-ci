@@ -27,10 +27,9 @@ val extract_hashes :
 (** Function used to parse log lines *)
 
 val v :
-  generation:Epoch.t Current.t ->
+  generation:Epoch.t ->
   config:Config.t ->
   name:string ->
-  voodoo:Voodoo.Do.t Current.t ->
   blessing:Package.Blessing.t Current.t ->
   deps:t list Current.t ->
   Prep.t Current.t ->
