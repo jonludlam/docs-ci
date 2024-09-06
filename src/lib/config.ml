@@ -89,11 +89,13 @@ module Ssh = struct
 
   let config t =
     Fmt.str
-      {|Host %s
+      {|ControlMaster auto
+        Host %s
           IdentityFile ~/.ssh/id_rsa
           Port %d
           User %s
           StrictHostKeyChecking=no
+          ControlPath ~/.ssh/master-%%r@%%h:%%p
           GlobalKnownHostsFile=/dev/null
           UserKnownHostsFile=/dev/null
           ConnectTimeout=10
@@ -128,8 +130,6 @@ module Ssh = struct
 end
 
 type t = {
-  voodoo_branch : string;
-  voodoo_repo : string;
   jobs : int;
   track_packages : string list;
   take_n_last_versions : int option;
@@ -138,18 +138,6 @@ type t = {
   ocluster_connection_gen : Current_ocluster.Connection.t;
   ssh : Ssh.t;
 }
-
-let voodoo_branch =
-  Arg.value
-  @@ Arg.opt Arg.(string) "odoc-driver"
-  @@ Arg.info ~doc:"Voodoo branch to watch" ~docv:"VOODOO_BRANCH"
-       [ "voodoo-branch" ]
-
-let voodoo_repo =
-  Arg.value
-  @@ Arg.opt Arg.string "https://github.com/jonludlam/voodoo.git"
-  @@ Arg.info ~doc:"Voodoo repository to watch" ~docv:"VOODOO_REPO"
-       [ "voodoo-repo" ]
 
 let cap_file =
   Arg.required
@@ -174,7 +162,7 @@ let take_n_last_versions =
   @@ Arg.opt Arg.(some int) None
   @@ Arg.info ~doc:"Limit the number of versions" ~docv:"LIMIT" [ "limit" ]
 
-let v voodoo_branch voodoo_repo cap_file jobs track_packages
+let v cap_file jobs track_packages
     take_n_last_versions ssh =
   let vat = Capnp_rpc_unix.client_only_vat () in
   let cap = Capnp_rpc_unix.Cap_file.load vat cap_file |> Result.get_ok in
@@ -190,8 +178,6 @@ let v voodoo_branch voodoo_repo cap_file jobs track_packages
   in
 
   {
-    voodoo_branch;
-    voodoo_repo;
     jobs;
     track_packages;
     take_n_last_versions;
@@ -204,8 +190,6 @@ let v voodoo_branch voodoo_repo cap_file jobs track_packages
 let cmdliner =
   Term.(
     const v
-    $ voodoo_branch
-    $ voodoo_repo
     $ cap_file
     $ jobs
     $ track_packages
@@ -214,15 +198,13 @@ let cmdliner =
 
 (* odoc pinned to tag 2.2.2 *)
 let odoc _ =
-  "https://github.com/jonludlam/odoc.git#e2fe2aad5bc730f81b5963387d096d2ed04c886d"
+  "https://github.com/jonludlam/odoc.git#b4fc189daa0b9faa33361361710d06e1f7f3fe0d"
 
 let sherlodoc _ =
   "https://github.com/jonludlam/sherlodoc.git#317089fb0cd7b365ce0d5c79b75cde0aca097afd"
 
 let pool _ = "linux-x86_64"
 let jobs t = t.jobs
-let voodoo_branch t = t.voodoo_branch
-let voodoo_repo t = t.voodoo_repo
 let track_packages t = t.track_packages
 let take_n_last_versions t = t.take_n_last_versions
 let ocluster_connection_do t = t.ocluster_connection_do

@@ -34,7 +34,6 @@ type prep
 
 val v :
   config:Config.t ->
-  voodoo:Voodoo.Prep.t Current.t ->
   spec:Spec.t Current.t ->
   deps:t list Current.t ->
   opamfiles:OpamFiles.Value.t Current.t ->

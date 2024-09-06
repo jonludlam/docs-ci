@@ -64,8 +64,8 @@ let rec summarise description arr = function
         items
       |> current_list_flatten
 
-let compile ~generation ~config ~voodoo_do
-    ~(blessed : Package.Blessing.Set.t Current.t OpamPackage.Map.t) ~pipeline_id:_
+let compile ~generation ~config
+    ~(blessed : Package.Blessing.Set.t Current.t OpamPackage.Map.t)
     (preps : (Prep.t Current.t Package.Map.t)) =
   let compilation_jobs = ref Package.Map.empty in
 
@@ -93,7 +93,7 @@ let compile ~generation ~config ~voodoo_do
              |> Current.map (fun b -> Package.Blessing.Set.get b package)
            in
            let node =
-             Compile.v ~generation ~config ~name ~voodoo:voodoo_do ~blessing
+             Compile.v ~generation ~config ~name ~blessing
                ~deps:(Current.list_seq compile_dependencies)
                prep
            in
@@ -137,8 +137,8 @@ let compile ~generation ~config ~voodoo_do
   Package.Map.filter_map get_compilation_node preps |> Package.Map.bindings
 
 
-let prep ~config ~voodoo_do
-  ~pipeline_id:_ ~opamfiles (all:Package.Set.t) =
+let prep ~config 
+  ~opamfiles (all:Package.Set.t) =
   let prep_jobs = ref Package.Map.empty in
 
   let rec get_prep_job package =
@@ -157,7 +157,7 @@ let prep ~config ~voodoo_do
         in
         let base_image = Misc.get_base_image (package :: dependencies) in
         let node =
-          Prep.v ~config ~voodoo:voodoo_do
+          Prep.v ~config
               ~deps:(Current.list_seq prep_dependencies)
               ~spec:base_image ~opamfiles ~prep:package
           in
@@ -271,33 +271,18 @@ let compile_hierarchical_collapse ~input lst =
 
 let v ~config ~opam ~monitor ~migrations () =
   let open Current.Syntax in
-  let voodoo = Voodoo.v config in
   let ssh = Config.ssh config in
-  let v_do = Current.map Voodoo.Do.v voodoo in
-  let v_prep = Current.map Voodoo.Prep.v voodoo in
   let migrations =
     match migrations with
     | Some path -> Index.migrate path
     | None -> Current.return ()
   in
-  let voodoo =
-    let+ _ = migrations and+ voodoo in
-    voodoo
-  in
   let generation =
-    let+ voodoo in
-    Epoch.v config voodoo
+    Epoch.v config
   in
   (* 0) Housekeeping - run migrations *)
   let* _ = migrations in
   Log.info (fun f -> f "0) Migrations");
-
-  (* Record a new pipeline run *)
-  (* Note that this ocurrent job will only run if the inputs have changed and a new pipeline is being run.
-     Otherwise, the results of the last successful run of the job will be used.
-     Thus, we reuse the pipeline_id and don't create a new pipeline_id on re-deploys.
-  *)
-  let pipeline_id = Record.v config voodoo in
 
   (* 1) Track the list of packages in the opam repository *)
   let tracked =
@@ -353,8 +338,8 @@ let v ~config ~opam ~monitor ~migrations () =
   in
 
   let prepped' : Prep.t Current.t Package.Map.t =
-    prep ~config ~voodoo_do:v_prep
-    ~pipeline_id ~opamfiles all_packages
+    prep ~config
+    ~opamfiles all_packages
   in
   Log.info (fun f ->
     f ".. %d prepped nodes" (Package.Map.cardinal prepped'));
@@ -405,8 +390,8 @@ let v ~config ~opam ~monitor ~migrations () =
   (* 7) Odoc compile and html-generate artifacts *)
   let html, html_input_node, package_pipeline_tree =
     let compile_monitor =
-      compile ~generation ~config ~voodoo_do:v_do ~blessed
-        ~pipeline_id prepped'
+      compile ~generation ~config ~blessed
+       prepped'
     in
     Log.info (fun f ->
         f ".. %d compilation nodes" (List.length compile_monitor));
@@ -438,6 +423,7 @@ let v ~config ~opam ~monitor ~migrations () =
 
   (* 8) Update live folders *)
   let live_branch =
+    let generation = Current.return ~label:"Generation" generation in
     Current.collapse ~input:html_input_node ~key:"Update live folders" ~value:""
     @@
     let commits_raw =
@@ -449,8 +435,8 @@ let v ~config ~opam ~monitor ~migrations () =
       |> Current.list_seq
       |> Current.map (List.filter_map Result.to_option)
     in
-    let live_html = Live.set_to ~ssh "html" `Html generation in
-    let live_linked = Live.set_to ~ssh "linked" `Linked generation in
+    let live_html = Live.set_to ~ssh "html" generation in
+    let live_linked = Live.set_to ~ssh "linked" generation in
     Current.all [ commits_raw |> Current.ignore_value; live_html; live_linked ]
   in
   Log.info (fun f -> f "8) Pipeline ready");

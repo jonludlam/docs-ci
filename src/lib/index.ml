@@ -108,7 +108,6 @@ let db =
      and record_pipeline =
        Sqlite3.prepare db
          "INSERT INTO docs_ci_pipeline_index (epoch_html, epoch_linked, \
-          voodoo_do, voodoo_prep, voodoo_branch, voodoo_repo, \
           odoc_commit) VALUES (?, ?, ?, ?, ?, ?, ?, ?) returning id"
      and get_recent_pipeline_ids =
        Sqlite3.prepare db
@@ -127,8 +126,7 @@ let db =
           pipeline_id = ?"
      and get_pipeline_data =
        Sqlite3.prepare db
-         "SELECT epoch_html, epoch_linked, voodoo_do, voodoo_prep, \
-          voodoo_branch, voodoo_repo, odoc_commit FROM docs_ci_pipeline_index \
+         "SELECT epoch_html, epoch_linked, odoc_commit FROM docs_ci_pipeline_index \
           WHERE id = ?"
      in
 
@@ -162,8 +160,7 @@ let record package pipeline_id package_status step_list =
         INT (pipeline_id |> Int64.of_int);
       ]
 
-let record_new_pipeline ~voodoo_do_commit ~voodoo_prep_commit
-    ~odoc_commit ~voodoo_repo ~voodoo_branch ~epoch_html ~epoch_linked =
+let record_new_pipeline ~odoc_commit ~epoch_html ~epoch_linked =
   let t = Lazy.force db in
   match
     Db.query_one t.record_pipeline
@@ -171,10 +168,6 @@ let record_new_pipeline ~voodoo_do_commit ~voodoo_prep_commit
         [
           TEXT epoch_html;
           TEXT epoch_linked;
-          TEXT voodoo_do_commit;
-          TEXT voodoo_prep_commit;
-          TEXT voodoo_branch;
-          TEXT voodoo_repo;
           TEXT odoc_commit;
         ]
   with
@@ -229,10 +222,6 @@ type pipeline_counts = {
 type pipeline_data = {
   epoch_html : string;
   epoch_linked : string;
-  voodoo_do : string;
-  voodoo_prep : string;
-  voodoo_branch : string;
-  voodoo_repo : string;
   odoc_commit : string;
 }
 
@@ -257,8 +246,6 @@ let get_pipeline_data pipeline_id =
            [
              TEXT epoch_html;
              TEXT epoch_linked;
-             TEXT voodoo_do;
-             TEXT voodoo_prep;
              NULL;
              (* these are new nullable columns so this option is for backward compatibility *)
              NULL;
@@ -266,27 +253,16 @@ let get_pipeline_data pipeline_id =
            ] ->
            ( epoch_html,
              epoch_linked,
-             voodoo_do,
-             voodoo_prep,
-             "",
-             "",
-             "" )
+             ""
+             )
        | Sqlite3.Data.
            [
              TEXT epoch_html;
              TEXT epoch_linked;
-             TEXT voodoo_do;
-             TEXT voodoo_prep;
-             TEXT voodoo_branch;
-             TEXT voodoo_repo;
              TEXT odoc_commit;
            ] ->
            ( epoch_html,
              epoch_linked,
-             voodoo_do,
-             voodoo_prep,
-             voodoo_branch,
-             voodoo_repo,
              odoc_commit )
        | row -> Fmt.failwith "get_pipeline_data: invalid row %a" Db.dump_row row
   in
@@ -294,20 +270,12 @@ let get_pipeline_data pipeline_id =
   | [
    ( epoch_html,
      epoch_linked,
-     voodoo_do,
-     voodoo_prep,
-     voodoo_branch,
-     voodoo_repo,
      odoc_commit );
   ] ->
       Some
         {
           epoch_html;
           epoch_linked;
-          voodoo_do;
-          voodoo_prep;
-          voodoo_branch;
-          voodoo_repo;
           odoc_commit;
         }
   | _ -> None

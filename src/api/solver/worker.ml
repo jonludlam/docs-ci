@@ -34,6 +34,9 @@ module Solve_request = struct
     platforms : (string * Vars.t) list;  (** Possible build platforms, by ID. *)
   }
   [@@deriving yojson]
+
+  let pp_constraint ppf (pkg, rel, vsn) =
+    Format.fprintf ppf "%s%s%s" pkg (match rel with | `Eq -> "=" | `Geq -> ">=" | `Gt -> ">" | `Leq -> "<=" | `Lt -> "<" | `Neq -> "<>") vsn
 end
 
 (** The response from the solver. *)

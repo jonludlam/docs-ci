@@ -11,7 +11,7 @@ module Base : sig
   type repository = HtmlRaw of Epoch.t | Linked of Epoch.t | Compile | Prep | Prep0
 
   val folder : repository -> Fpath.t
-  val generation_folder : Epoch.stage -> Epoch.t -> Fpath.t
+  val generation_folder : Epoch.t -> Fpath.t
 end
 
 (* [for_all repo packages command] is a command that executes [command] for all [packages] folders in [repo].

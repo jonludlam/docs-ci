@@ -213,6 +213,9 @@ module Solver = struct
           let result =
             match res with
             | Ok (packages, commit) ->
+                Current.Job.log job "Packages returned: ";
+                List.iter (fun (pkg, deps) ->
+                  Current.Job.log job "%s: [%a]" (OpamPackage.to_string pkg) Fmt.(list ~sep:comma string) (List.map OpamPackage.to_string deps)) packages;
                 Ok (Package.make ~blacklist ~commit ~root packages)
             | Error (`Msg msg) ->
                 Current.Job.log job "Solving failed for %s: %s"

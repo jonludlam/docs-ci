@@ -167,10 +167,6 @@ let make ~monitor =
              in
              let health_slot = Results.health_init results in
              let open Raw.Builder.PipelineHealth in
-             voodoo_do_commit_set health_slot pipeline_data.voodoo_do;
-             voodoo_prep_commit_set health_slot pipeline_data.voodoo_prep;
-             voodoo_branch_set health_slot pipeline_data.voodoo_branch;
-             voodoo_repo_set health_slot pipeline_data.voodoo_repo;
              odoc_commit_set health_slot pipeline_data.odoc_commit;
              epoch_html_set health_slot pipeline_data.epoch_html;
              epoch_linked_set health_slot pipeline_data.epoch_linked;
