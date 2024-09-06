@@ -190,7 +190,7 @@ let fold_logs build_job fn =
 let tar_cmd folder =
   let f = Fpath.to_string folder in
   Fmt.str
-    "shopt -s nullglob && ((echo LISTING %s && ls %s/* && tar -cvf %s.tar %s/*  && rm -R %s/* && mv %s.tar \
+    "shopt -s nullglob && ((echo LISTING %s && [ ! -z \"$(ls -A %s)\" ] && tar -cvf %s.tar %s/*  && rm -R %s/* && mv %s.tar \
      %s/content.tar) || (echo 'Empty directory'))"
     f f f f f f f
 

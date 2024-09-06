@@ -92,12 +92,15 @@ end = struct
         | _ -> Fmt.failwith "BUG: bad output: %s" results)
 
   let handle ~log request t =
-    let { Worker.Solve_request.opam_repository_commit; platforms; pkgs; _ } =
+    let { Worker.Solve_request.opam_repository_commit; platforms; pkgs; constraints } =
       request
     in
-    Log.info log "Solving for %a using opam_repository_commit %s"
+    Log.info log "Solving for %a, constraints %a using opam_repository_commit %s"
       Fmt.(list ~sep:comma string)
-      pkgs opam_repository_commit;
+      pkgs
+      Fmt.(list ~sep:comma Worker.Solve_request.pp_constraint)
+      constraints
+      opam_repository_commit;
     let opam_repository_commit = Store.Hash.of_hex opam_repository_commit in
     platforms
     |> Lwt_list.map_p (fun p ->

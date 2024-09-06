@@ -1,14 +1,14 @@
 module Base = struct
   type repository = HtmlRaw of Epoch.t | Linked of Epoch.t | Compile | Prep | Prep0
 
-  let generation_folder stage generation =
-    Fpath.(v ("epoch-" ^ Epoch.digest stage generation))
+  let generation_folder generation =
+    Fpath.(v ("epoch-" ^ Epoch.digest generation))
 
   let folder = function
     | HtmlRaw generation ->
-        Fpath.(generation_folder `Html generation / "html-raw")
+        Fpath.(generation_folder generation / "html-raw")
     | Linked generation ->
-        Fpath.(generation_folder `Linked generation / "linked")
+        Fpath.(generation_folder generation / "linked")
     | Compile -> Fpath.v "compile"
     | Prep -> Fpath.v "prep"
     | Prep0 -> Fpath.v "prep0"
@@ -87,8 +87,8 @@ module Tar = struct
     match extra_files with
     | [] ->
         Fmt.str
-          "HASH=$((sha256sum $1/content.tar | cut -d \" \" -f 1)  || echo -n \
-           'empty'); rm $1/content.tar; printf \"%s:$2:$HASH\\n\";"
+          "HASH=$((sha256sum $1/content.tar 2>/dev/null | cut -d \" \" -f 1)  || echo -n \
+           'empty'); rm -f $1/content.tar; printf \"%s:$2:$HASH\\n\";"
           prefix
     | extra_files ->
         Fmt.str

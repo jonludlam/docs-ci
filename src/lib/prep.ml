@@ -155,7 +155,7 @@ let universes_assoc packages =
          name ^ ":" ^ hash)
   |> String.concat ","
 
-let spec ~ssh ~voodoo ~tools_base ~base ~opamfiles (prep : Package.t) =
+let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
   let open Obuilder_spec in
   (* the list of packages to install (which is a superset of the packages to prep) *)
   let all_deps = Package.universe prep |> Package.Universe.deps in
@@ -192,13 +192,13 @@ let spec ~ssh ~voodoo ~tools_base ~base ~opamfiles (prep : Package.t) =
            | _ -> false)
   in
 
-  let prep_storage_folder = (Storage.Prep, prep) in
+  let prep_storage_folder = (Storage.Prep0, prep) in
   let prep_folder = Storage.folder Prep0 prep in
 
   let create_dir_and_copy_logs_if_not_exist =
     let command =
       Fmt.str
-        "([ -d $1 ] || (echo \"FAILED:$2\" && mkdir -p $1 && cp ~/opam.err.log \
+        "([ -d $1 ] || (echo FAILED:$2 && mkdir -p $1 && cp ~/opam.err.log \
          $1 && opam show $3 --raw > $1/opam)) && (%s)"
         (Misc.tar_cmd (Fpath.v "$1"))
     in
@@ -207,9 +207,62 @@ let spec ~ssh ~voodoo ~tools_base ~base ~opamfiles (prep : Package.t) =
 
   let install_opamfiles pkg tar_b64 =
     let name = OpamPackage.to_string pkg in
-    run "(touch /tmp/%s ; echo \"%s\" | base64 -d | sudo tar -jxvC /src)" name tar_b64
+    Fmt.str "echo %s ; echo %s | base64 -d | sudo tar -jxC /src" name tar_b64
   in
-  let tools = Voodoo.Prep.spec ~base:tools_base voodoo |> Spec.finish in
+
+           (* Intall packages. Recover in case of failure. *)
+  let install_packages = List.flatten @@ List.map (fun pkg ->
+            match List.assoc_opt (Package.opam pkg) opamfiles with
+            | Some (has_depext, opamfiles) ->
+              [ install_opamfiles (Package.opam pkg) opamfiles;
+                (Fmt.str "time rsync -r %s:%s/%s/ /tmp/ && time tar -C / -xf /tmp/content.tar"
+                  (Config.Ssh.host ssh)
+                  (Config.Ssh.storage_folder ssh)
+                  (Fpath.to_string (Storage.folder Storage.Prep0 pkg)))
+                   ] @
+              if has_depext then [ Fmt.str "/home/opam/opamh make-state --output $(opam var prefix)/.opam-switch/switch-state && opam update && opam depext %s" (Package.opam pkg |> OpamPackage.name |> OpamPackage.Name.to_string)] else []
+            | None -> [ Fmt.str "echo Failed to find opamfiles for %s" (Package.opam pkg |> OpamPackage.to_string) ]) packages_topo_list
+  in
+  let extra_opamfiles =
+    List.flatten (List.map (fun pkg ->
+      match List.assoc_opt pkg opamfiles with
+      | Some (_has_depext, opamfiles) ->
+          [ install_opamfiles pkg opamfiles ]
+      | _ -> [ Fmt.str "echo Missing %s" (OpamPackage.to_string pkg)]) (add_base ocaml_version [])
+       )
+  in
+  let pkg_opamfile =
+    (match List.assoc_opt (Package.opam prep) opamfiles with
+            | Some (_has_depext, opamfiles) ->
+              [ install_opamfiles (Package.opam prep) opamfiles ]
+            | None -> [])
+  in
+  let post_steps =
+    [ "/home/opam/opamh make-state --output $(opam var prefix)/.opam-switch/switch-state";
+      Fmt.str "(opam update && opam install -vv --debug-level=2 --confirm-level=unsafe-yes --solver=builtin-0install %s 2>&1 && opam clean -s | tee ~/opam.err.log) || echo \
+          'Failed to install all packages'" (Package.opam prep |> OpamPackage.to_string);
+      Fmt.str "mkdir -p %s" (Fpath.to_string prep_folder);
+      Fmt.str "/home/opam/opamh save --output=%s/content.tar %s" (Fpath.to_string prep_folder) (Package.opam prep |> OpamPackage.name |> OpamPackage.Name.to_string);
+      Fmt.str "time rsync -aR ./%s %s:%s/."
+        (Fpath.to_string prep_folder)
+        (Config.Ssh.host ssh)
+        (Config.Ssh.storage_folder ssh);
+      "rm -f /tmp/*.tar";
+      "rm -rf $(opam var prefix)";
+    ] in
+
+  let persistent_ssh = [ Fmt.str "ssh -MNf %s" (Config.Ssh.host ssh) ] in
+
+  let copy_results =
+    (create_dir_and_copy_logs_if_not_exist) 
+    @ 
+  (* Compute hashes *)
+    (Storage.for_all [prep_storage_folder]
+      (Storage.Tar.hash_command ~prefix:"HASHES" ()))
+  in
+
+  (* let install_packages = persistent_ssh @ pkg_opamfile @ extra_opamfiles @ install_packages @ post_steps @ copy_results in *)
+  let tools = Voodoo.Prep.spec ~base:tools_base |> Spec.finish in
   base
   |> Spec.children ~name:"tools" tools
   |> Spec.add
@@ -225,71 +278,16 @@ let spec ~ssh ~voodoo ~tools_base ~base ~opamfiles (prep : Package.t) =
          run "sudo mkdir /src/packages";
          run "opam repo add opam /src";
          copy ~from:(`Build "tools")
-           [ "/home/opam/voodoo-prep"; "/home/opam/opamh" ]
+           [ "/home/opam/opamh" ]
            ~dst:"/home/opam/";
          (* Enable build cache conditionally on dune version *)
          env "DUNE_CACHE" (if dune_cache_enabled then "enabled" else "disabled");
          env "DUNE_CACHE_TRANSPORT" "direct";
          env "DUNE_CACHE_DUPLICATION" "copy";
-       ] @ 
-         List.flatten (List.map (fun pkg ->
-          match List.assoc_opt pkg opamfiles with
-          | Some (_has_depext, opamfiles) ->
-              [ install_opamfiles pkg opamfiles ]
-          | _ -> [ run "echo Missing %s" (OpamPackage.to_string pkg)]) (add_base ocaml_version [])
-           ) @
-         (* Intall packages. Recover in case of failure. *)
-         List.flatten (List.map (fun pkg ->
-            match List.assoc_opt (Package.opam pkg) opamfiles with
-            | Some (has_depext, opamfiles) ->
-              [ install_opamfiles (Package.opam pkg) opamfiles;
-                run ~network:Misc.network ~secrets:Config.Ssh.secrets "%s"
-                  (Fmt.str "echo \"rsync -r %s:%s/%s/ /tmp/ && ls /tmp/ && tar -C / -xvf /tmp/%s.tar\" >> /tmp/run.sh"
-                    (Config.Ssh.host ssh)
-                    (Config.Ssh.storage_folder ssh)
-                    (Fpath.to_string (Storage.folder Storage.Prep0 pkg))
-                    (Package.opam pkg |> OpamPackage.to_string)) ] @
-              if has_depext then [ run ~network:Misc.network "echo \"/home/opam/opamh make-state --output $(opam var prefix)/.opam-switch/switch-state && opam update && opam depext %s\" >> /tmp/run.sh" (Package.opam pkg |> OpamPackage.name |> OpamPackage.Name.to_string)] else []
-            | None -> [ run "echo Failed to find opamfiles for %s" (Package.opam pkg |> OpamPackage.to_string) ]) packages_topo_list) @
-          (match List.assoc_opt (Package.opam prep) opamfiles with
-            | Some (_has_depext, opamfiles) ->
-              [ install_opamfiles (Package.opam prep) opamfiles ]
-            | None -> []) @ [
-          run ~cache "echo \"/home/opam/opamh make-state --output $(opam var prefix)/.opam-switch/switch-state\" >> /tmp/run.sh";
-          run ~network ~cache "echo \"(opam update && opam install -vv --debug-level=2 --confirm-level=unsafe-yes --solver=builtin-0install %s 2>&1 && opam clean -s | tee ~/opam.err.log) || echo \
-                'Failed to install all packages'\" >> /tmp/run.sh" (Package.opam prep |> OpamPackage.to_string);
-          run "mkdir -p %s" (Fpath.to_string prep_folder);
-          run ~network ~cache "echo \"/home/opam/opamh save --output=%s/%s.tar %s\" >> /tmp/run.sh" (Fpath.to_string prep_folder) (Package.opam prep |> OpamPackage.to_string) (Package.opam prep |> OpamPackage.name |> OpamPackage.Name.to_string);
-          run ~network:Misc.network ~secrets:Config.Ssh.secrets "%s"
-            (Fmt.str "echo \"rsync -aR ./%s %s:%s/.\" >> /tmp/run.sh"
-              (Fpath.to_string prep_folder)
-              (Config.Ssh.host ssh)
-              (Config.Ssh.storage_folder ssh))
-
-              ]
-        @ [
-        (* Perform the prep step for all packages *)
-         run "echo \"opam exec -- ~/voodoo-prep -u %s\" >> /tmp/run.sh" (universes_assoc [prep]);
-         (* Extract artifacts  - cache needs to be invalidated if we want to be able to read the logs *)
-         run "echo '%f'" (Random.float 1.);
-
-         run ~network ~cache ~secrets:Config.Ssh.secrets "cat /tmp/run.sh && bash /tmp/run.sh";
-         ] @
-          
-                (List.map (run ~network ~secrets:Config.Ssh.secrets "%s")
-                  (create_dir_and_copy_logs_if_not_exist))
-          @ 
-
-                (* Extract *)
-                (List.map (run ~network ~secrets:Config.Ssh.secrets "%s") (Storage.for_all [prep_storage_folder]
-                  (Fmt.str "rsync -aR --no-p ./$1 %s:%s/.;"
-                     (Config.Ssh.host ssh)
-                     (Config.Ssh.storage_folder ssh))))
-          @ (List.map (run ~network ~secrets:Config.Ssh.secrets "%s")
-                (* Compute hashes *)
-                (Storage.for_all [prep_storage_folder]
-                  (Storage.Tar.hash_command ~prefix:"HASHES" ()));
-       ))
+         (* run ~network ~cache ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list install_packages *)
+         run ~network ~cache ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list (persistent_ssh @ pkg_opamfile @ extra_opamfiles @ install_packages @ post_steps @ copy_results);
+        ]          
+       )
 
       
 type prep_result = Success | Failed
@@ -317,15 +315,13 @@ module Prep = struct
       prep : Package.t;
       base : Spec.t;
       tools_base : Spec.t;
-      voodoo : Voodoo.Prep.t;
       config : Config.t;
       opamfiles : (OpamPackage.t * (bool * string)) list;
     }
 
-    let digest { prep; voodoo; base = _; tools_base = _; config = _; opamfiles = _; } =
+    let digest { prep; base = _; tools_base = _; config = _; opamfiles = _; } =
       (* base is derived from 'prep' so we don't need to include it in the hash *)
-      Fmt.str "%s\n%s\n%s\n%s\n" prep_version (Package.digest prep)
-        (Voodoo.Prep.digest voodoo)
+      Fmt.str "%s\n%s\n%s\n" prep_version (Package.digest prep)
         (Package.digest prep)
   end
 
@@ -340,7 +336,7 @@ module Prep = struct
     let unmarshal t = t |> Yojson.Safe.from_string |> of_yojson |> Result.get_ok
   end
 
-  let build No_context job Key.{ prep; base; tools_base; voodoo; config; opamfiles; }
+  let build No_context job Key.{ prep; base; tools_base; config; opamfiles; }
       =
     let open Lwt.Syntax in
     let ( let** ) = Lwt_result.bind in
@@ -349,7 +345,7 @@ module Prep = struct
        requires changes in the solver.
        For now we rebuild only if voodoo-prep changes.
     *)
-    let spec = spec ~ssh:(Config.ssh config) ~voodoo ~base ~tools_base ~opamfiles prep in
+    let spec = spec ~ssh:(Config.ssh config) ~base ~tools_base ~opamfiles prep in
     let action = Misc.to_ocluster_submission spec in
     let version = Misc.cache_hint prep in
     Current.Job.log job "Prep job: prep %a" Package.pp prep;
@@ -455,13 +451,13 @@ module StringSet = Set.Make (String)
 
 let weekly = Current_cache.Schedule.v ~valid_for:(Duration.of_day 7) ()
 
-let v ~config ~voodoo ~spec ~deps ~opamfiles ~prep =
+let v ~config ~spec ~deps ~opamfiles ~prep =
   let open Current.Syntax in  
   Current.component "voodoo-prep %s" (prep |> Package.digest)
-  |> let> voodoo and> spec and> opamfiles and> deps
+  |> let> spec and> opamfiles and> deps
   and> tools_base = Misc.default_base_image in
     ignore deps;
-    PrepCache.get No_context { prep; voodoo; config; base = spec; tools_base; opamfiles; }
+    PrepCache.get No_context { prep; config; base = spec; tools_base; opamfiles; }
     |> Current.Primitive.map_result (Result.map (fun (artifacts_branches_output, _failed) ->
       let _artifacts_branches_output =
         artifacts_branches_output
