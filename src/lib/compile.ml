@@ -7,17 +7,19 @@ let hashes t = t.hashes
 let blessing t = t.blessing
 let package t = t.package
 
-let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~voodoo ~deps ~blessing ~generation prep =
+let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~config ~deps ~blessing ~generation prep =
   let open Obuilder_spec in
   let package = Prep.package prep in
   let prep_folder = Storage.folder Prep package in
+  let prep0_folder = Storage.folder Prep0 package in
+  let tarfile = "content.tar" in
   let compile_folder = Storage.folder (Compile blessing) package in
   let linked_folder = Storage.folder (Linked (generation, blessing)) package in
   let raw_folder = Storage.folder (HtmlRaw (generation, blessing)) package in
   let opam = package |> Package.opam in
   let name = opam |> OpamPackage.name_to_string in
-  let tools = Voodoo.Do.spec ~base voodoo |> Spec.finish in
-  let odoc_driver = Voodoo.OdocDriver.spec ~base:odoc_driver_base (Voodoo.OdocDriver.v ~odoc_pin ~sherlodoc_pin) |> Spec.finish in
+  let tools = Voodoo.Odoc.spec ~base config |> Spec.finish in
+  let odoc_driver = Voodoo.OdocDriver.spec ~base:odoc_driver_base ~odoc_pin ~sherlodoc_pin |> Spec.finish in
   base
   |> Spec.children ~name:"tools" tools
   |> Spec.children ~name:"odoc_driver" odoc_driver
@@ -34,60 +36,50 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~voodoo ~
            ~dst:"/home/opam/";
          run "mv ~/sherlodoc $(opam config var bin)/sherlodoc";
          run "echo hello";
+         run ~network:Misc.network "sudo apt install -y jq";
          (* obtain the compiled dependencies, prep folder and extract it *)
-       ] @ (List.map (run ~network:Misc.network ~secrets:Config.Ssh.secrets "%s")
+       ] @ [ run ~network:Misc.network ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list
+            ((Fmt.str "ssh -MNf %s" (Config.Ssh.host ssh)) ::
             (Storage.for_all
                   (deps
                   |> List.rev_map (fun { blessing; package; _ } ->
                          (Storage.Compile blessing, package)))
-                  (Fmt.str "rsync -aR %s:%s/./$1 .;" (Config.Ssh.host ssh)
-                     (Config.Ssh.storage_folder ssh)))) @
-       [ run ~network:Misc.network ~secrets:Config.Ssh.secrets "%s"
-           @@ Misc.Cmd.list
-               [Fmt.str "rsync -aR %s:%s/./%s ." (Config.Ssh.host ssh)
+                  (Fmt.str "time rsync -aR %s:%s/./$1 .;" (Config.Ssh.host ssh)
+                     (Config.Ssh.storage_folder ssh))) @
+               [Fmt.str "time rsync -a %s:%s/./%s/%s ." (Config.Ssh.host ssh)
                   (Config.Ssh.storage_folder ssh)
-                  (Fpath.to_string prep_folder);
-                Fmt.str "find . -name '*.tar' -exec tar -xvf {} \\;";
-               ];
-         (* prepare the compilation folder *)
-         run "%s"
-         @@ Misc.Cmd.list
-              [
+                  (Fpath.to_string prep0_folder)
+                  tarfile;
+                Fmt.str "tar xf %s" tarfile;
+                Fmt.str "mkdir -p %s" (Fpath.to_string prep_folder);
+                Fmt.str "mv home/opam/.opam/*/* %s || true" (Fpath.to_string prep_folder);
+                Fmt.str "mv home/opam/.opam/*/.opam-switch/packages/*/opam %s || true" (Fpath.to_string prep_folder);
+                Fmt.str "find . -name '*.tar' -exec tar -xf {} \\;";
+               (* prepare the compilation folder *)
+
                 Fmt.str "mkdir -p %a" Fpath.pp compile_folder;
                 Fmt.str
                   "rm -f compile/packages.mld compile/page-packages.odoc \
                    compile/packages/*.mld compile/packages/*.odoc \
                    compile/packages/%s/*.odoc"
                   name;
-              ];
-         (* Run voodoo-do && tar compile/linked output *)
-         run "%s"
-         @@ Misc.Cmd.list
-              [
-                "ls -lR";
+                "export OCAMLRUNPAM=b";
                 Fmt.str
-                  "OCAMLRUNPARAM=b opam exec -- /home/opam/odoc_driver --voodoo --verbose --odoc /home/opam/odoc --odoc-dir compile --odocl-dir linked --html-dir %s --package %s %s "
+                  "time opam exec -- /home/opam/odoc_driver --voodoo --verbose --odoc /home/opam/odoc --odoc-dir compile --odocl-dir linked --html-dir %s --stats --package %s %s "
                   (Fpath.to_string (Storage.Base.folder (HtmlRaw generation)))
                   name
                   (match blessing with Blessed -> "--blessed" | Universe -> "");
-                
-                Fmt.str "find %a" Fpath.pp compile_folder;
-
+                Fmt.str "jq . driver-benchmarks.json";
                 Misc.tar_cmd compile_folder;
                 Fmt.str "mkdir -p linked && mkdir -p %a && mv linked %a/"
                   Fpath.pp
-                  (Storage.Base.generation_folder `Linked generation)
+                  (Storage.Base.generation_folder generation)
                   Fpath.pp
-                  (Storage.Base.generation_folder `Linked generation);
+                  (Storage.Base.generation_folder generation);
                 Fmt.str "mkdir -p %a" Fpath.pp linked_folder;
                 Misc.tar_cmd linked_folder;
-              ];
-         (* Extract compile output   - cache needs to be invalidated if we want to be able to read the logs *)
-         run ~network:Misc.network ~secrets:Config.Ssh.secrets "%s"
-         @@ Misc.Cmd.list
-              [
                 Fmt.str "echo '%f'" (Random.float 1.);
-                Fmt.str "rsync -aR ./%s ./%s %s:%s/."
+                Fmt.str "time rsync -aR ./%s ./%s %s:%s/."
                   (Fpath.to_string compile_folder)
                   Fpath.(to_string (parent linked_folder))
                   (Config.Ssh.host ssh)
@@ -98,14 +90,10 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~voodoo ~
                 Fmt.str "set '%s'; %s"
                   (Fpath.to_string linked_folder)
                   (Storage.Tar.hash_command ~prefix:"LINKED" ());
-              ];
-        run ~network:Misc.network ~secrets:Config.Ssh.secrets "%s"
-        @@ Misc.Cmd.list
-              [
                 Fmt.str "echo '%f'" (Random.float 1.);
                 Fmt.str "mkdir -p %a" Fpath.pp raw_folder;
                 (* Extract raw and html output *)
-                Fmt.str "rsync -aR ./%s %s:%s/."
+                Fmt.str "time rsync -aR ./%s %s:%s/."
                   (Fpath.to_string raw_folder)
                   (Config.Ssh.host ssh)
                   (Config.Ssh.storage_folder ssh);
@@ -113,11 +101,12 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~voodoo ~
                 Fmt.str "set '%s' raw; %s"
                   (Fpath.to_string raw_folder)
                   (Storage.hash_command ~prefix:"RAW");
-              ];
+                "rm -rf /home/opam/docs/*"
+               ]);
      
        ])
 
-let spec_failure ~ssh ~base ~voodoo ~blessing ~generation prep =
+let spec_failure ~ssh ~base ~config ~blessing ~generation prep =
   let open Obuilder_spec in
   let package = Prep.package prep in
   let prep_folder = Storage.folder Prep package in
@@ -126,7 +115,7 @@ let spec_failure ~ssh ~base ~voodoo ~blessing ~generation prep =
   let opam = Package.opam package in
   let name = OpamPackage.name_to_string opam in
   let version = OpamPackage.version_to_string opam in
-  let tools = Voodoo.Do.spec ~base voodoo |> Spec.finish in
+  let tools = Voodoo.Odoc.spec ~base config |> Spec.finish in
   base
   |> Spec.children ~name:"tools" tools
   |> Spec.add
@@ -146,7 +135,7 @@ let spec_failure ~ssh ~base ~voodoo ~blessing ~generation prep =
                 Fmt.str "rsync -aR %s:%s/./%s ." (Config.Ssh.host ssh)
                   (Config.Ssh.storage_folder ssh)
                   (Fpath.to_string prep_folder);
-                Fmt.str "find . -name '*.tar' -exec tar -xvf {} \\;";
+                Fmt.str "find . -name '*.tar' -exec tar -xf {} \\;";
               ];
          (* prepare the compilation folder *)
          run "%s"
@@ -171,9 +160,9 @@ let spec_failure ~ssh ~base ~voodoo ~blessing ~generation prep =
                 Misc.tar_cmd compile_folder;
                 Fmt.str "mkdir -p linked && mkdir -p %a && mv linked %a/"
                   Fpath.pp
-                  (Storage.Base.generation_folder `Linked generation)
+                  (Storage.Base.generation_folder generation)
                   Fpath.pp
-                  (Storage.Base.generation_folder `Linked generation);
+                  (Storage.Base.generation_folder generation);
                 Fmt.str "mkdir -p %a" Fpath.pp linked_folder;
                 Fmt.str "touch %a/hack" Fpath.pp linked_folder;
                 Misc.tar_cmd linked_folder;
@@ -255,18 +244,17 @@ module Compile = struct
       base : Spec.t;
       odoc_driver_base : Spec.t;
       blessing : Package.Blessing.t;
-      voodoo : Voodoo.Do.t;
     }
 
-    let key { config = _; deps; prep; blessing; voodoo; base = _; odoc_driver_base = _ } =
-      Fmt.str "v9-%s-%s-%s-%a-%s"
+    let key { config = _; deps; prep; blessing; base = _; odoc_driver_base = _ } =
+      Fmt.str "v9-%s-%s-%s-%a"
         (Package.Blessing.to_string blessing)
         (Prep.package prep |> Package.digest)
         (Prep.hash prep)
         Fmt.(
           list (fun f { hashes = { compile_hash; _ }; _ } ->
               Fmt.pf f "%s" compile_hash))
-        deps (Voodoo.Do.digest voodoo)
+        deps
 
     let digest t = key t |> Digest.string |> Digest.to_hex
   end
@@ -277,7 +265,7 @@ module Compile = struct
   let auto_cancel = true
 
   let build { generation; _ } job
-      Key.{ deps; prep; blessing; voodoo; config; base; odoc_driver_base } =
+      Key.{ deps; prep; blessing; config; base; odoc_driver_base } =
     let open Lwt.Syntax in
     let ( let** ) = Lwt_result.bind in
     let package = Prep.package prep in
@@ -289,11 +277,11 @@ module Compile = struct
       match Prep.result prep with
       | Success ->
           Lwt.return_ok
-            (spec_success ~generation ~ssh:(Config.ssh config) ~voodoo ~base
+            (spec_success ~generation ~ssh:(Config.ssh config) ~config ~base
               ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~deps ~blessing prep)
       | Failed ->
           Lwt.return_ok
-            (spec_failure ~generation ~ssh:(Config.ssh config) ~voodoo ~base
+            (spec_failure ~generation ~ssh:(Config.ssh config) ~config ~base
                ~blessing prep)
     in
     let action = Misc.to_ocluster_submission spec in
@@ -347,10 +335,10 @@ end
 
 module CompileCache = Current_cache.Make (Compile)
 
-let v ~generation ~config ~name ~voodoo ~blessing ~deps prep =
+let v ~generation ~config ~name ~blessing ~deps prep =
   let open Current.Syntax in
   Current.component "do %s" name
-  |> let> prep and> voodoo and> blessing and> deps and> generation 
+  |> let> prep and> blessing and> deps 
      and> odoc_driver_base = Misc.default_base_image in
      let package = Prep.package prep in
      let base = Prep.base prep in
@@ -358,7 +346,7 @@ let v ~generation ~config ~name ~voodoo ~blessing ~deps prep =
 
      let output =
        CompileCache.get { Compile.generation }
-         Compile.Key.{ prep; blessing; voodoo; deps; config; base; odoc_driver_base }
+         Compile.Key.{ prep; blessing; deps; config; base; odoc_driver_base }
      in
      Current.Primitive.map_result
        (Result.map (fun hashes -> { package; blessing; hashes }))
