@@ -214,9 +214,15 @@ module Solver = struct
             match res with
             | Ok (packages, commit) ->
                 Current.Job.log job "Packages returned: ";
+                let ocaml_version = 
+                  let root_deps = List.assoc root packages in
+                  List.find
+                  (fun p -> OpamPackage.name_to_string p = "ocaml-base-compiler") (root::root_deps) |> OpamPackage.version_to_string |> Ocaml_version.of_string_exn
+                in
+          
                 List.iter (fun (pkg, deps) ->
                   Current.Job.log job "%s: [%a]" (OpamPackage.to_string pkg) Fmt.(list ~sep:comma string) (List.map OpamPackage.to_string deps)) packages;
-                Ok (Package.make ~blacklist ~commit ~root packages)
+                Ok (Package.make ~ocaml_version ~blacklist ~commit ~root packages)
             | Error (`Msg msg) ->
                 Current.Job.log job "Solving failed for %s: %s"
                   (OpamPackage.to_string root)
