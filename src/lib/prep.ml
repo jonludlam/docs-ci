@@ -75,7 +75,6 @@ let build _ job { Key.repo; packages } =
         let* res = Current.Process.exec ~cancellable:true ~job
         ("", Bos.Cmd.to_list command |> Array.of_list) in
         Current.Job.log job "Finished";
-
         match res with
       | Ok () -> begin
         let res = Bos.OS.File.read tarfile in
@@ -123,6 +122,7 @@ let add_base ocaml_version init =
       (OpamPackage.Name.of_string n)
       (OpamPackage.Version.of_string v)
   in
+  let v = Ocaml_version.of_string_exn ocaml_version in
   let std = List.fold_right add_one [
     mk "base-unix" "base";
     mk "base-bigarray" "base";
@@ -130,20 +130,24 @@ let add_base ocaml_version init =
     mk "ocaml-base-compiler" ocaml_version;
     mk "ocaml" ocaml_version;
   ] init in
-  let extra = List.assoc ocaml_version.[0] [
-    '5', [mk "base-domains" "base";
+  let extra = List.assoc (Ocaml_version.major v) [
+    5, [mk "base-domains" "base";
           mk "base-nnp" "base";
           mk "host-arch-x86_64" "1";
           mk "host-system-other" "1";
-          mk "ocaml-config" "3";
           mk "ocaml-options-vanilla" "1";
           ];
-    '4', [mk "ocaml-config" "2";
+    4, [
     mk "ocaml-options-vanilla" "1";
+    mk "host-system-other" "1";
+    mk "host-arch-x86_64" "1";
     ]
     
   ] in
-  std @ extra
+  let ocaml_config =
+    if Ocaml_version.major v = 5 then [ mk "ocaml-config" "3"] else if Ocaml_version.minor v >= 12 then [ mk "ocaml-config" "2"] else [ mk "ocaml-config" "1" ]
+  in
+  ocaml_config @ std @ extra
 
 (* association list from package to universes encoded as "<PKG>:<UNIVERSE HASH>,..."
    to be consumed by voodoo-prep *)
@@ -210,19 +214,29 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
     Fmt.str "echo %s ; echo %s | base64 -d | sudo tar -jxC /src" name tar_b64
   in
 
-           (* Intall packages. Recover in case of failure. *)
-  let install_packages = List.flatten @@ List.map (fun pkg ->
-            match List.assoc_opt (Package.opam pkg) opamfiles with
-            | Some (has_depext, opamfiles) ->
-              [ install_opamfiles (Package.opam pkg) opamfiles;
-                (Fmt.str "time rsync -r %s:%s/%s/ /tmp/ && time tar -C / -xf /tmp/content.tar"
-                  (Config.Ssh.host ssh)
-                  (Config.Ssh.storage_folder ssh)
-                  (Fpath.to_string (Storage.folder Storage.Prep0 pkg)))
-                   ] @
-              if has_depext then [ Fmt.str "/home/opam/opamh make-state --output $(opam var prefix)/.opam-switch/switch-state && opam update && opam depext %s" (Package.opam pkg |> OpamPackage.name |> OpamPackage.Name.to_string)] else []
-            | None -> [ Fmt.str "echo Failed to find opamfiles for %s" (Package.opam pkg |> OpamPackage.to_string) ]) packages_topo_list
+  let install_all_opamfiles = List.filter_map (fun pkg ->
+    match List.assoc_opt (Package.opam pkg) opamfiles with
+    | Some (_, opamfiles) ->
+      Some (run ~network "%s" (install_opamfiles (Package.opam pkg) opamfiles))
+    | None -> None) packages_topo_list
   in
+
+  let install_packages = List.flatten @@ List.map (fun pkg ->
+    match List.assoc_opt (Package.opam pkg) opamfiles with
+    | Some (_has_depext, _opamfiles) ->
+      [ Fmt.str "time rsync -r %s:%s/%s/ /tmp/ && time tar -C / -xf /tmp/content.tar"
+          (Config.Ssh.host ssh)
+          (Config.Ssh.storage_folder ssh)
+          (Fpath.to_string (Storage.folder Storage.Prep0 pkg))
+      ]
+    | None ->
+      [ Fmt.str "echo Failed to find opamfiles for %s"
+          (Package.opam pkg |> OpamPackage.to_string)
+      ]) packages_topo_list
+  in
+
+  let any_depexts = List.exists (fun pkg -> match List.assoc_opt (Package.opam pkg) opamfiles with | Some (has_depext, _) -> has_depext | None -> false) packages_topo_list in
+
   let extra_opamfiles =
     List.flatten (List.map (fun pkg ->
       match List.assoc_opt pkg opamfiles with
@@ -231,14 +245,18 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
       | _ -> [ Fmt.str "echo Missing %s" (OpamPackage.to_string pkg)]) (add_base ocaml_version [])
        )
   in
+
   let pkg_opamfile =
     (match List.assoc_opt (Package.opam prep) opamfiles with
-            | Some (_has_depext, opamfiles) ->
-              [ install_opamfiles (Package.opam prep) opamfiles ]
-            | None -> [])
+      | Some (_has_depext, opamfiles) ->
+        [ install_opamfiles (Package.opam prep) opamfiles ]
+      | None -> [])
   in
+
   let post_steps =
-    [ "/home/opam/opamh make-state --output $(opam var prefix)/.opam-switch/switch-state";
+    [ "find $(opam var prefix) -maxdepth 3 | sort";
+      "opam update && /home/opam/opamh make-state --output $(opam var prefix)/.opam-switch/switch-state";
+      if any_depexts then Fmt.str "opam depext %s" (OpamPackage.to_string (Package.opam prep)) else "echo no depexts";
       Fmt.str "(opam update && opam install -vv --debug-level=2 --confirm-level=unsafe-yes --solver=builtin-0install %s 2>&1 && opam clean -s | tee ~/opam.err.log) || echo \
           'Failed to install all packages'" (Package.opam prep |> OpamPackage.to_string);
       Fmt.str "mkdir -p %s" (Fpath.to_string prep_folder);
@@ -285,7 +303,10 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
          env "DUNE_CACHE_TRANSPORT" "direct";
          env "DUNE_CACHE_DUPLICATION" "copy";
          (* run ~network ~cache ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list install_packages *)
-         run ~network ~cache ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list (persistent_ssh @ pkg_opamfile @ extra_opamfiles @ install_packages @ post_steps @ copy_results);
+       ] @ install_all_opamfiles @ [
+         run ~network ~cache ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list (persistent_ssh @ pkg_opamfile @ extra_opamfiles)
+        ] @ (List.map (run ~network ~cache ~secrets:Config.Ssh.secrets "%s")  install_packages) @ [
+        run ~network ~cache ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list (post_steps @ copy_results);
         ]          
        )
 
