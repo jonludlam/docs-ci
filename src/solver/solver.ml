@@ -17,6 +17,7 @@ let universes ~packages (resolutions : OpamPackage.t list) =
   let memo = Hashtbl.create (List.length resolutions) in
 
   let rec aux root =
+    Format.eprintf "aux: %s\n%!" (OpamPackage.to_string root);
     match Hashtbl.find_opt memo root with
     | Some universe -> universe
     | None ->
@@ -31,10 +32,11 @@ let universes ~packages (resolutions : OpamPackage.t list) =
           |> OpamFile.OPAM.depends
           |> OpamFilter.partial_filter_formula
                (OpamFilter.deps_var_env ~build:true ~post:false ~test:false
-                  ~doc:true ~dev:false)
+                  ~doc:false ~dev:false)
           |> get_names
           |> OpamPackage.Name.Set.of_list
         in
+        Format.eprintf "deps=[%s]\n%!" (String.concat "," (OpamPackage.Name.Set.elements deps |> List.map OpamPackage.Name.to_string));
         let depopts =
           opamfile
           |> OpamFile.OPAM.depopts
@@ -73,13 +75,17 @@ let universes ~packages (resolutions : OpamPackage.t list) =
 let solve ~packages ~constraints ~root_pkgs (vars : Worker.Vars.t) =
   let context = Git_context.create () ~packages ~env:(env vars) ~constraints in
   let t0 = Unix.gettimeofday () in
+  Format.eprintf "Can I be seen??\n%!";
   let r = Solver.solve context root_pkgs in
   let t1 = Unix.gettimeofday () in
   Printf.printf "%.2f\n" (t1 -. t0);
   match r with
   | Ok sels ->
+      Format.eprintf "Got sels\n%!";
       let pkgs = Solver.packages_of_result sels in
+      Format.eprintf "Got pkgs\n%!";
       let universes = universes ~packages pkgs in
+      Format.eprintf "Got universes\n%!";
       Ok
         (List.rev_map
            (fun (pkg, str, univ) ->

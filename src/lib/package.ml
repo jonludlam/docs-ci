@@ -1,18 +1,32 @@
+module Ocaml_version = struct
+  include Ocaml_version
+
+  let to_yojson x =
+    `String (Ocaml_version.to_string x)
+
+  let of_yojson x =
+    match x with
+    | `String s ->
+      (match Ocaml_version.of_string s with | Ok x -> Ok x | Error (`Msg s) -> Error s)
+    | _ -> Error ("Ocaml_version.of_yojson")
+end
+
+
 module rec Universe : sig
   type t [@@deriving yojson]
 
   val hash : t -> string
   val deps : t -> Package.t list
   val pp : t Fmt.t
-  val v : Package.t list -> t
+  val v : Ocaml_version.t -> Package.t list -> t
   val compare : t -> t -> int
 end = struct
-  type t = { hash : string; deps : Package.t list } [@@deriving yojson]
+  type t = { ocaml_version : Ocaml_version.t; hash : string; deps : Package.t list } [@@deriving yojson]
 
   let hash t = t.hash
   let deps t = t.deps
 
-  let v deps =
+  let v ocaml_version deps =
     let str =
       deps
       |> List.map Package.opam
@@ -22,7 +36,7 @@ end = struct
            ""
     in
     let hash = Digest.to_hex (Digest.string str) in
-    { hash; deps }
+    { ocaml_version; hash; deps }
 
   let pp f { hash; _ } = Fmt.pf f "%s" hash
   let compare { hash; _ } { hash = hash2; _ } = String.compare hash hash2
@@ -38,16 +52,17 @@ and Package : sig
   val id : t -> string
   val pp : t Fmt.t
   val compare : t -> t -> int
-  val v : OpamPackage.t -> t list -> string -> t
+  val v : Ocaml_version.t -> OpamPackage.t -> t list -> string -> t
 
   val make :
+    ocaml_version : Ocaml_version.t ->
     blacklist:string list ->
     commit:string ->
     root:OpamPackage.t ->
     (OpamPackage.t * OpamPackage.t list) list ->
     t
 end = struct
-  type t = { opam : O.OpamPackage.t; universe : Universe.t; commit : string }
+  type t = { ocaml_version : Ocaml_version.t; opam : O.OpamPackage.t; universe : Universe.t; commit : string }
   [@@deriving yojson]
 
   let universe t = t.universe
@@ -55,7 +70,7 @@ end = struct
   let commit t = t.commit
   let id t = OpamPackage.to_string t.opam ^ "-" ^ Universe.hash t.universe
   let digest = id
-  let v opam deps commit = { opam; universe = Universe.v deps; commit }
+  let v ocaml_version opam deps commit = { ocaml_version; opam; universe = Universe.v ocaml_version deps; commit }
 
   let pp f { universe; opam; _ } =
     Fmt.pf f "%s; %a" (OpamPackage.to_string opam) Universe.pp universe
@@ -75,7 +90,7 @@ end = struct
     |> List.filter (fun (pkg, _) -> filter pkg)
     |> List.map (fun (pkg, deps) -> (pkg, List.filter filter deps))
 
-  let make ~blacklist ~commit ~root deps =
+  let make ~ocaml_version ~blacklist ~commit ~root deps =
     let deps = remove_blacklisted_packages ~blacklist deps in
     let memo = ref OpamPackage.Map.empty in
     let package_deps = OpamPackage.Map.of_list deps in
@@ -89,7 +104,7 @@ end = struct
             |> Option.value ~default:[]
             |> List.map obtain
           in
-          let pkg = Package.v package deps_pkg commit in
+          let pkg = Package.v ocaml_version package deps_pkg commit in
           memo := OpamPackage.Map.add package pkg !memo;
           pkg
     in

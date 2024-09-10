@@ -2,7 +2,7 @@ module rec Universe : sig
   type t
   (** A dependency universe *)
 
-  val v : Package.t list -> t
+  val v : Ocaml_version.t -> Package.t list -> t
   (** [v packages] Build the dependency universe made of [packages] *)
 
   val deps : t -> Package.t list
@@ -23,6 +23,7 @@ val to_yojson : t -> Yojson.Safe.t
 val of_yojson : Yojson.Safe.t -> t Ppx_deriving_yojson_runtime.error_or
 
 val make :
+  ocaml_version:Ocaml_version.t ->
   blacklist:string list ->
   commit:string ->
   root:OpamPackage.t ->
