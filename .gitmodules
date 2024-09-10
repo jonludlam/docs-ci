@@ -3,7 +3,7 @@
 	url = https://github.com/ocurrent/ocluster
 [submodule "vendor/ocurrent"]
 	path = vendor/ocurrent
-	url = https://github.com/ocurrent/ocurrent
+	url = https://github.com/jonludlam/ocurrent
 [submodule "vendor/ocaml-version"]
 	path = vendor/ocaml-version
 	url = https://github.com/ocurrent/ocaml-version
