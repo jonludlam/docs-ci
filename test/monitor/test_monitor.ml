@@ -19,7 +19,7 @@ let running =
 let fakepkg ~blessing name =
   let open Docs_ci_lib in
   let root = OpamPackage.of_string name in
-  let pkg = Package.make ~blacklist:[] ~commit:"0" ~root [] in
+  let pkg = Package.make ~ocaml_version:Ocaml_version.Releases.latest ~blacklist:[] ~commit:"0" ~root [] in
   let blessing =
     let set =
       Package.Blessing.Set.v ~counts:(Package.Map.singleton pkg 0) [ pkg ]
