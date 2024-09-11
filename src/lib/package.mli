@@ -43,7 +43,7 @@ val digest : t -> string
 val commit : t -> string
 val id : t -> string
 val topo_sort : t list -> t list
-val ocaml_version : t -> string
+val ocaml_version : t -> Ocaml_version.t
 
 module Map : Map.S with type key = t
 module Set : Set.S with type elt = t
