@@ -155,7 +155,7 @@ let prep ~config
             get_prep_job
             dependencies
         in
-        let base_image = Misc.get_base_image (package :: dependencies) in
+        let base_image = Misc.get_base_image package in
         let node =
           Prep.v ~config
               ~deps:(Current.list_seq prep_dependencies)

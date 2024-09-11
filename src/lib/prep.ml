@@ -12,7 +12,7 @@ module OpamPackage = struct
         match OpamPackage.of_string_opt str with
         | Some x -> Ok x
         | None -> Error "failed to parse version")
-    | _ -> Error "failed to parse version"
+    | _ -> Error "failed to run version"
 end
 module OpamFiles = struct
 
@@ -122,13 +122,13 @@ let add_base ocaml_version init =
       (OpamPackage.Name.of_string n)
       (OpamPackage.Version.of_string v)
   in
-  let v = Ocaml_version.of_string_exn ocaml_version in
+  let v = ocaml_version in
   let std = List.fold_right add_one [
     mk "base-unix" "base";
     mk "base-bigarray" "base";
     mk "base-threads" "base";
-    mk "ocaml-base-compiler" ocaml_version;
-    mk "ocaml" ocaml_version;
+    mk "ocaml-base-compiler" (Ocaml_version.to_string ocaml_version);
+    mk "ocaml" (Ocaml_version.to_string ocaml_version);
   ] init in
   let extra = List.assoc (Ocaml_version.major v) [
     5, [mk "base-domains" "base";
@@ -217,9 +217,11 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
   let install_all_opamfiles = List.filter_map (fun pkg ->
     match List.assoc_opt (Package.opam pkg) opamfiles with
     | Some (_, opamfiles) ->
-      Some (run ~network "%s" (install_opamfiles (Package.opam pkg) opamfiles))
+      Some (install_opamfiles (Package.opam pkg) opamfiles)
     | None -> None) packages_topo_list
   in
+
+  let install_cmds = List.map (run ~network "%s") (Misc.Cmd.list_list install_all_opamfiles) in
 
   let install_packages = List.flatten @@ List.map (fun pkg ->
     match List.assoc_opt (Package.opam pkg) opamfiles with
@@ -303,9 +305,8 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
          env "DUNE_CACHE_TRANSPORT" "direct";
          env "DUNE_CACHE_DUPLICATION" "copy";
          (* run ~network ~cache ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list install_packages *)
-       ] @ install_all_opamfiles @ [
-         run ~network ~cache ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list (persistent_ssh @ pkg_opamfile @ extra_opamfiles)
-        ] @ (List.map (run ~network ~cache ~secrets:Config.Ssh.secrets "%s")  install_packages) @ [
+       ] @ install_cmds @ [
+         run ~network ~cache ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list (persistent_ssh @ pkg_opamfile @ extra_opamfiles @ install_packages) ] @ [
         run ~network ~cache ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list (post_steps @ copy_results);
         ]          
        )

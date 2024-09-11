@@ -149,7 +149,9 @@ type key = Track.t
 type t = { successes : Track.t list; failures : Track.t list }
 
 let keys t = t.successes
-let get key = Cache.read key |> Option.get (* is in cache ? *) |> Result.get_ok
+let get key =
+  Format.eprintf "Trying to 'get' %s\n%!" (Track.pkg key |> OpamPackage.to_string);
+   Cache.read key |> Option.get (* is in cache ? *) |> Result.get_ok
 
 let failures t =
   t.failures
