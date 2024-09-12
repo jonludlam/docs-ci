@@ -39,6 +39,7 @@ end = struct
            (Ocaml_version.to_string ocaml_version)
     in
     let hash = Digest.to_hex (Digest.string str) in
+    if hash = "d41d8cd98f00b204e9800998ecf8427e" then failwith "Empty digest!";
     { ocaml_version; hash; deps }
 
   let pp f { hash; _ } = Fmt.pf f "%s" hash
