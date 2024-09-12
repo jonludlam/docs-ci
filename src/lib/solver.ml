@@ -67,6 +67,7 @@ let perform_constrained_solve ~solver ~pool ~job ~(platform : Platform.t) ~opam
       | Ok [] ->
           Fmt.error_msg "no platform:\n%s" (String.concat "\n" (List.rev !logs))
       | Ok [ x ] ->
+          Current.Job.log job "Here we go";
           let solution =
             List.map
               (fun (a, _opamfile, b) ->
