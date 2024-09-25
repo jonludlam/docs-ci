@@ -209,7 +209,7 @@ module Cmd = struct
     let open Fmt in
     to_to_string (list ~sep:(const string " && ") (fun f -> pf f "(%s)"))
 
-  let list_list ?(max=1024*1024) l =
+  let list_list ?(max=64*1024) l =
     match l with
     | [] -> []
       | _ ->

@@ -196,9 +196,9 @@ let cmdliner =
     $ take_n_last_versions
     $ Ssh.cmdliner)
 
-(* odoc pinned to tag 2.2.2 *)
+(* odoc pinned *)
 let odoc _ =
-  "https://github.com/jonludlam/odoc.git#b6021b9131b8eb705f5514d6755a05904d2dd19b"
+  "https://github.com/jonludlam/odoc.git#53a0d9754a3bd9de2eb518457b677b632c646251"
 
 let sherlodoc _ =
   "https://github.com/jonludlam/sherlodoc.git#317089fb0cd7b365ce0d5c79b75cde0aca097afd"

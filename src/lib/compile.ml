@@ -37,6 +37,7 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~config ~
          run "mv ~/sherlodoc $(opam config var bin)/sherlodoc";
          run "echo hello";
          run ~network:Misc.network "sudo apt install -y jq";
+         run "echo hello, world";
          (* obtain the compiled dependencies, prep folder and extract it *)
        ] @ [ run ~network:Misc.network ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list
             ((Fmt.str "ssh -MNf %s" (Config.Ssh.host ssh)) ::
@@ -65,7 +66,7 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~config ~
                   name;
                 "export OCAMLRUNPAM=b";
                 Fmt.str
-                  "time opam exec -- /home/opam/odoc_driver --voodoo --verbose --odoc /home/opam/odoc --odoc-dir compile --odocl-dir linked --html-dir %s --stats --package %s %s "
+                  "time opam exec -- /home/opam/odoc_driver --voodoo --verbose --odoc /home/opam/odoc --odoc-dir compile --odocl-dir linked --html-dir %s --stats --package %s %s"
                   (Fpath.to_string (Storage.Base.folder (HtmlRaw generation)))
                   name
                   (match blessing with Blessed -> "--blessed" | Universe -> "");

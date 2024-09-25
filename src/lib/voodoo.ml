@@ -18,7 +18,7 @@ module Prep = struct
            run ~network ~cache "%s" @@ Misc.Cmd.list [
              "sudo apt-get update && sudo apt-get install -yy m4 pkg-config";
            Fmt.str "opam pin -ny opamh %s"
-             "https://github.com/jonludlam/opamh.git#917d396775abe135c8c87c164488f882ba5bde43 && opam install -y opamh";
+             "https://github.com/jonludlam/opamh.git#d54dbe7991af6020c36f89c300d8109664541963 && opam install -y opamh";
            "cp $(opam config var bin)/opamh /home/opam";
            "rm -rf $(opam config var prefix)"
          ]]
