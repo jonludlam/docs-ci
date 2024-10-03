@@ -42,7 +42,7 @@ let universes ~packages (resolutions : OpamPackage.t list) =
           |> OpamFile.OPAM.depopts
           |> OpamFilter.partial_filter_formula
                (OpamFilter.deps_var_env ~build:true ~post:false ~test:false
-                  ~doc:true ~dev:false)
+                  ~doc:true ~dev_setup:false ~dev:false)
           |> get_names
           |> OpamPackage.Name.Set.of_list
         in
@@ -75,7 +75,6 @@ let universes ~packages (resolutions : OpamPackage.t list) =
 let solve ~packages ~constraints ~root_pkgs (vars : Worker.Vars.t) =
   let context = Git_context.create () ~packages ~env:(env vars) ~constraints in
   let t0 = Unix.gettimeofday () in
-  Format.eprintf "Can I be seen??\n%!";
   let r = Solver.solve context root_pkgs in
   let t1 = Unix.gettimeofday () in
   Printf.printf "%.2f\n" (t1 -. t0);

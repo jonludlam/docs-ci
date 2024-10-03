@@ -24,7 +24,6 @@ type pipeline_tree =
   | And of (string * pipeline_tree) list
   | Or of (string * pipeline_tree) list
 
-type preps = U : (Package.t * _ Current.t) list OpamPackage.Map.t -> preps
 type state = Done | Running | Failed [@@deriving show, eq]
 
 type step_status = Err of string | Active | Blocked | OK
@@ -59,7 +58,7 @@ let opam_package_from_string name =
 
 type t = {
   mutable solve_failures : string OpamPackage.Map.t;
-  mutable preps : preps;
+  mutable preps : pipeline_tree Package.Map.t;
   mutable blessing : Package.Blessing.Set.t Current.t OpamPackage.Map.t;
   mutable trees : pipeline_tree Package.Map.t;
 }
@@ -70,7 +69,7 @@ let get_solve_failures t = t.solve_failures
 let make () =
   {
     solve_failures = OpamPackage.Map.empty;
-    preps = U OpamPackage.Map.empty;
+    preps = Package.Map.empty;
     blessing = OpamPackage.Map.empty;
     trees = Package.Map.empty;
   }
@@ -132,11 +131,10 @@ let get_opam_package_info t opam_package =
   in
   match Package.Blessing.Set.blessed blessing_set with
   | None ->
-      let (U preps) = t.preps in
-      Or
-        (OpamPackage.Map.find opam_package preps
-        |> List.map (fun (package, current) ->
-               ("prep " ^ Package.id package, Item current)))
+      let preps = Package.Map.filter (fun package _ ->
+        Package.opam package = opam_package) t.preps in
+      Or (Package.Map.bindings preps |> List.map (fun (package, tree) ->
+          (Package.id package, tree)))
   | Some blessed_package ->
       let blessed_pipeline = Package.Map.find blessed_package t.trees in
       blessed_pipeline
@@ -176,6 +174,7 @@ let rec to_steps description arr = function
 
 let render_package_state t opam_package =
   let name = OpamPackage.name_to_string opam_package in
+  let all = Package.Map.filter_map (fun p x -> if Package.opam p = opam_package then Some x else None) t.preps in
   match OpamPackage.Map.find_opt opam_package t.solve_failures with
   | Some reason ->
       let open Tyxml_html in
@@ -189,10 +188,14 @@ let render_package_state t opam_package =
       let* blessed_pipeline = get_opam_package_info t opam_package in
       let open Tyxml_html in
       Ok
-        [
+        ([
           h1 [ txt ("Package " ^ name) ];
           render ~level:1 (simplify blessed_pipeline);
-        ]
+          h2 [ txt ("All universes")];
+
+        ] @ List.flatten (List.map (fun (pkg, pipeline) ->
+          [ h3 [ txt (Package.universe pkg |> Package.Universe.hash) ];
+            render ~level:2 (simplify pipeline) ]) (Package.Map.bindings all)))
 
 let handle t ~engine:_ str =
   object
@@ -490,7 +493,7 @@ let collect_metrics t =
 
 let register t solve_failures preps blessing trees =
   t.solve_failures <- OpamPackage.Map.of_list solve_failures;
-  t.preps <- U preps;
+  t.preps <- preps;
   t.blessing <- blessing;
   t.trees <- trees
 
