@@ -66,7 +66,7 @@ let rec summarise description arr = function
 
 let compile ~generation ~config
     ~(blessed : Package.Blessing.Set.t Current.t OpamPackage.Map.t)
-    (preps : (Prep.t Current.t Package.Map.t)) =
+    (preps : ((Prep.t Current.t * _) Package.Map.t)) =
   let compilation_jobs = ref Package.Map.empty in
 
   let rec get_compilation_job package =
@@ -75,7 +75,7 @@ let compile ~generation ~config
     with Not_found ->
       let job =
         Package.Map.find_opt package preps
-        |> Option.map @@ fun prep ->
+        |> Option.map @@ fun (prep, _) ->
            let dependencies =
              Package.universe package |> Package.Universe.deps
            in
@@ -150,19 +150,35 @@ let prep ~config
         let dependencies =
           Package.universe package |> Package.Universe.deps
         in
-        let prep_dependencies =
+        let prep_dependencies_names =
           List.map
-            get_prep_job
+            (fun p ->
+              get_prep_job p |> (fun (a, _) -> (p, a)))
             dependencies
+        in
+        let prep_dependencies =
+          prep_dependencies_names |> List.map snd
         in
         let base_image = Misc.get_base_image package in
         let node =
           Prep.v ~config
               ~deps:(Current.list_seq prep_dependencies)
               ~spec:base_image ~opamfiles ~prep:package
-          in
-          node
+        in
+        let monitor =
+          Monitor.(
+            Seq
+              [
+                ( "prep",
+                  And (("prep "^Package.id package, Item node) 
+                  :: List.map (fun (pkg, compile) ->
+                    ("prep dependency "^Package.id pkg, Item compile)) prep_dependencies_names));
+              ]
+          )
+        in
+        node, monitor
       in
+
       prep_jobs := Package.Map.add package job !prep_jobs;
       job
   in
@@ -337,7 +353,7 @@ let v ~config ~opam ~monitor ~migrations () =
     Prep.OpamFilesCache.get No_context Prep.OpamFiles.Key.{ repo = repo_opam; packages }
   in
 
-  let prepped' : Prep.t Current.t Package.Map.t =
+  let prepped' : (Prep.t Current.t * Monitor.pipeline_tree) Package.Map.t =
     prep ~config
     ~opamfiles all_packages
   in
@@ -362,7 +378,7 @@ let v ~config ~opam ~monitor ~migrations () =
     in
     let by_opam_package =
       Package.Map.fold
-        (fun package prep opam_map ->
+        (fun package (prep, _) opam_map ->
           let opam = Package.opam package in
           let job =
             let+ job = Current.state ~hidden:true prep in
@@ -409,6 +425,8 @@ let v ~config ~opam ~monitor ~migrations () =
   in
   Log.info (fun f -> f "7) Odoc compile nodes");
 
+  let prep_pipeline_tree = Package.Map.map snd prepped' in
+
   (* 7.b) Inform the monitor *)
   let () =
     let solver_failures = Solver.failures solver_result in
@@ -416,7 +434,7 @@ let v ~config ~opam ~monitor ~migrations () =
     Log.info (fun f ->
         f "7.b) Inform the monitor: successes %i, failures %i" successes
           (List.length solver_failures));
-    Monitor.register monitor solver_failures OpamPackage.Map.empty blessed
+    Monitor.register monitor solver_failures prep_pipeline_tree blessed
       package_pipeline_tree
   in
   Log.info (fun f -> f "7.b) Inform monitor");
