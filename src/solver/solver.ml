@@ -75,7 +75,6 @@ let universes ~packages (resolutions : OpamPackage.t list) =
 let solve ~packages ~constraints ~root_pkgs (vars : Worker.Vars.t) =
   let context = Git_context.create () ~packages ~env:(env vars) ~constraints in
   let t0 = Unix.gettimeofday () in
-  Format.eprintf "Can I be seen??\n%!";
   let r = Solver.solve context root_pkgs in
   let t1 = Unix.gettimeofday () in
   Printf.printf "%.2f\n" (t1 -. t0);
