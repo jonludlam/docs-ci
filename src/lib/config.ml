@@ -198,7 +198,7 @@ let cmdliner =
 
 (* odoc pinned *)
 let odoc _ =
-  "https://github.com/jonludlam/odoc.git#53a0d9754a3bd9de2eb518457b677b632c646251"
+  "https://github.com/jonludlam/odoc.git#5b4851e5b666cf5f5d989254128ab66a5c1c5110"
 
 let sherlodoc _ =
   "https://github.com/jonludlam/sherlodoc.git#317089fb0cd7b365ce0d5c79b75cde0aca097afd"

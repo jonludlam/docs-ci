@@ -240,6 +240,8 @@ module Compile = struct
   module Key = struct
     type t = {
       config : Config.t;
+      odoc : string;
+      sherlodoc : string;
       deps : output list;
       prep : Prep.t;
       base : Spec.t;
@@ -247,8 +249,11 @@ module Compile = struct
       blessing : Package.Blessing.t;
     }
 
-    let key { config = _; deps; prep; blessing; base = _; odoc_driver_base = _ } =
-      Fmt.str "v9-%s-%s-%s-%a"
+    let key { config = _; odoc; sherlodoc; deps; prep; blessing; base = _; odoc_driver_base = _ } =
+      let odoc_sherl_hash =
+        Fmt.str "%s-%s" odoc sherlodoc |> Digest.string |> Digest.to_hex in
+      Fmt.str "v9-%s-%s-%s-%s-%a"
+        odoc_sherl_hash
         (Package.Blessing.to_string blessing)
         (Prep.package prep |> Package.digest)
         (Prep.hash prep)
@@ -266,12 +271,12 @@ module Compile = struct
   let auto_cancel = true
 
   let build { generation; _ } job
-      Key.{ deps; prep; blessing; config; base; odoc_driver_base } =
+      Key.{ deps; prep; blessing; config; base; odoc_driver_base; odoc; sherlodoc } =
     let open Lwt.Syntax in
     let ( let** ) = Lwt_result.bind in
     let package = Prep.package prep in
-    let odoc_pin = Config.odoc config in
-    let sherlodoc_pin = Config.sherlodoc config in
+    let odoc_pin = odoc in
+    let sherlodoc_pin = sherlodoc in
     Current.Job.write job
       (Fmt.str "Prep base: %s" (Spec.to_spec (Prep.base prep)));
     let** spec =
@@ -344,10 +349,11 @@ let v ~generation ~config ~name ~blessing ~deps prep =
      let package = Prep.package prep in
      let base = Prep.base prep in
      (Logs.debug (fun m -> m "Prep base: %s" (Spec.to_spec base)));
-
+     let odoc = Config.odoc config in
+     let sherlodoc = Config.sherlodoc config in 
      let output =
        CompileCache.get { Compile.generation }
-         Compile.Key.{ prep; blessing; deps; config; base; odoc_driver_base }
+         Compile.Key.{ prep; blessing; deps; config; base; odoc_driver_base; odoc; sherlodoc }
      in
      Current.Primitive.map_result
        (Result.map (fun hashes -> { package; blessing; hashes }))
