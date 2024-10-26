@@ -17,7 +17,6 @@ let universes ~packages (resolutions : OpamPackage.t list) =
   let memo = Hashtbl.create (List.length resolutions) in
 
   let rec aux root =
-    Format.eprintf "aux: %s\n%!" (OpamPackage.to_string root);
     match Hashtbl.find_opt memo root with
     | Some universe -> universe
     | None ->
@@ -36,7 +35,6 @@ let universes ~packages (resolutions : OpamPackage.t list) =
           |> get_names
           |> OpamPackage.Name.Set.of_list
         in
-        Format.eprintf "deps=[%s]\n%!" (String.concat "," (OpamPackage.Name.Set.elements deps |> List.map OpamPackage.Name.to_string));
         let depopts =
           opamfile
           |> OpamFile.OPAM.depopts
@@ -72,8 +70,13 @@ let universes ~packages (resolutions : OpamPackage.t list) =
       (pkg, str, aux pkg |> OpamPackage.Set.elements))
     resolutions
 
+type solve_result = Worker.solve_result =
+  { compile_universes : (string * string * string list) list;
+    link_universes: (string * string * string list) list; } [@@deriving yojson]
+
 let solve ~packages ~constraints ~root_pkgs (vars : Worker.Vars.t) =
-  let context = Git_context.create () ~packages ~env:(env vars) ~constraints in
+  let extended = Git_context.extend_packages packages in
+  let context = Git_context.create () ~packages:extended ~env:(env vars) ~constraints in
   let t0 = Unix.gettimeofday () in
   let r = Solver.solve context root_pkgs in
   let t1 = Unix.gettimeofday () in
@@ -83,17 +86,50 @@ let solve ~packages ~constraints ~root_pkgs (vars : Worker.Vars.t) =
       Format.eprintf "Got sels\n%!";
       let pkgs = Solver.packages_of_result sels in
       Format.eprintf "Got pkgs\n%!";
-      let universes = universes ~packages pkgs in
+      let compile_universes = universes ~packages pkgs in
       Format.eprintf "Got universes\n%!";
+      let link_universes = universes ~packages:extended pkgs in
+      let map_universes univs =
+        List.map
+          (fun (pkg, str, univ) ->
+            (OpamPackage.to_string pkg, str, List.map OpamPackage.to_string univ))
+          univs
+      in
       Ok
-        (List.rev_map
-           (fun (pkg, str, univ) ->
-             (OpamPackage.to_string pkg, str, List.rev_map OpamPackage.to_string univ))
-           universes)
+        { compile_universes = map_universes compile_universes;
+          link_universes = map_universes link_universes }  
   | Error diagnostics -> Error (Solver.diagnostics diagnostics)
 
-type solve_result = (string * string * string list) list [@@deriving yojson]
 
+
+let test commit =
+  Format.eprintf "Running test\n%!";
+  let packages =
+    Lwt_main.run
+      ( Opam_repository.open_store () >>= fun store ->
+        Git_context.read_packages store commit )
+  in
+  let root_pkgs = List.map OpamPackage.Name.of_string ["ocaml";"ocaml-base-compiler";"vpnkit"] in
+  let constraints = 
+   List.map (fun (name, rel, version) ->
+      ( OpamPackage.Name.of_string name,
+        (rel, OpamPackage.Version.of_string version) )) [("ocaml-base-compiler",`Geq, "4.08.0"); ("ocaml", `Leq, "5.2.0"); ("vpnkit", `Eq, "0.2.0")]
+        |> OpamPackage.Name.Map.of_list
+   in
+   let platform = {
+    Worker.Vars.arch = "x86_64";
+   os="linux";
+   os_distribution="linux";
+   os_family="ubuntu";
+   os_version="20.04";
+   } in
+   Format.eprintf "Calling solve\n%!";
+   match solve ~packages ~constraints ~root_pkgs platform with
+                 | Ok packages ->
+                     
+                     Printf.printf "%s\n" (solve_result_to_yojson packages |> Yojson.Safe.to_string)
+                 | Error msg -> Printf.printf "%s\n" msg
+        
 let main commit =
   let packages =
     Lwt_main.run

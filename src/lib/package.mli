@@ -8,6 +8,9 @@ module rec Universe : sig
   val deps : t -> Package.t list
   (** Retrieve the list of dependencies *)
 
+  val extra_link_deps : t -> Package.t list
+  (** Extra link dependencies *)
+
   val hash : t -> string
   (** Get the universe hash *)
 end
@@ -27,6 +30,7 @@ val make :
   blacklist:string list ->
   commit:string ->
   root:OpamPackage.t ->
+  (OpamPackage.t * OpamPackage.t list) list ->
   (OpamPackage.t * OpamPackage.t list) list ->
   t
 (** Using the solver results, obtain the package instance corresponding to the

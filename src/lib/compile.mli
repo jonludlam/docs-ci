@@ -5,10 +5,13 @@
     the compilation, link and html generation steps, outputting the results in
     the compile/ and html/ folders. *)
 
-type hashes = { compile_hash : string; linked_hash : string; html_hash : string }
+type hashes = { compile_hash : string option; linked_hash : string option; html_hash : string option }
 
 type t
 (** A compiled package *)
+
+type jobty = | CompileAndLink | CompileOnly | LinkOnly
+(** The type of compilation job *)
 
 val hashes : t -> hashes
 (** Hash of the compiled artifacts *)
@@ -32,6 +35,7 @@ val v :
   name:string ->
   blessing:Package.Blessing.t Current.t ->
   deps:t list Current.t ->
+  jobty:jobty ->
   Prep.t Current.t ->
   t Current.t
 (** [v ~voodoo ~cache ~blessed ~deps prep] is the ocurrent component in charge
