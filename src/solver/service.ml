@@ -110,7 +110,7 @@ end = struct
            | Error _ as e -> Lwt.return (id, e)
            | Ok packages ->
                let repo_packages =
-                 List.map (fun (pkg, _opam, _) -> OpamPackage.of_string pkg) packages
+                 List.map (fun (pkg, _opam, _) -> OpamPackage.of_string pkg) packages.link_universes
                in
                Opam_repository.oldest_commit_with repo_packages
                  ~from:opam_repository_commit ~log
@@ -120,9 +120,13 @@ end = struct
             Log.info log "= %s =" id;
             match result with
             | Ok result ->
-                Log.info log "-> @[<hov>%a@]"
-                  Fmt.(list ~sep:sp string)
-                  (List.map (fun (p, _, _) -> p) result.Selection.packages);
+                let log_u name u =
+                  Log.info log "-> %s @[<hov>%a@]" name
+                    Fmt.(list ~sep:sp string)
+                    (List.map (fun (p, _, _) -> p) u)
+                in
+                log_u "compile" result.Selection.packages.compile_universes;
+                log_u "link" result.Selection.packages.link_universes;
                 Log.info log "(valid since opam-repository commit %s)"
                   result.Selection.commit;
                 Some result
