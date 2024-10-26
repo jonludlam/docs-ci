@@ -12,11 +12,15 @@ module Vars = struct
   [@@deriving yojson]
 end
 
+type solve_result =
+  { compile_universes : (string * string * string list) list;
+    link_universes: (string * string * string list) list; } [@@deriving yojson, ord]
+
 (** A set of packages for a single build. *)
 module Selection = struct
   type t = {
     id : string;  (** The platform ID from the request. *)
-    packages : (string * string * string list) list;
+    packages : solve_result;
         (** The selected packages ("name.version") and their universes. *)
     commit : string;  (** A commit in opam-repository to use. *)
   }

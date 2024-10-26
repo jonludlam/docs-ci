@@ -95,13 +95,6 @@ let default_base_image =
   in
   Spec.make tag
 
-let spec_of_job job =
-  let install = job.Jobs.install in
-  try get_base_image install
-  with e ->
-    Format.eprintf "Error with job: %a" Package.pp install;
-    raise e
-
 let network = [ "host" ]
 let docs_cache_folder = "/home/opam/docs-cache/"
 let cache = [ Obuilder_spec.Cache.v ~target:docs_cache_folder "ci-docs" ]

@@ -81,6 +81,7 @@ module Track = struct
     let filter name =
       match filter with [] -> true | lst -> List.mem (Fpath.basename name) lst
     in
+    Log.info (fun f -> f "Tracking packages in %a" Fpath.pp (Git.Commit.repo repo));
     let* () = Current.Job.start ~level:Harmless job in
     Git.with_checkout ~job repo @@ fun dir ->
     let result =

@@ -11,19 +11,6 @@ end
 module OpamPackageNameCurrentMap = CurrentMap (OpamPackage.Name.Map)
 module OpamPackageVersionCurrentMap = CurrentMap (OpamPackage.Version.Map)
 
-module PrepStatus = struct
-  type t = Jobs.t * Prep.t list Current_term.Output.t
-
-  let pp f (t, _) = Fmt.pf f "Prep status %a" Jobs.pp t
-
-  let compare (j1, r1) (j2, r2) =
-    match Jobs.compare j1 j2 with
-    | 0 ->
-        Result.compare
-          ~ok:(fun _ _ -> 0 (*twp same jobs yield the same prep list*))
-          ~error:Stdlib.compare r1 r2
-    | v -> v
-end
 
 let status = function
   | Error (`Msg msg) -> Monitor.Err msg
@@ -69,7 +56,7 @@ let compile ~generation ~config
     (preps : ((Prep.t Current.t * _) Package.Map.t)) =
   let compilation_jobs = ref Package.Map.empty in
 
-  let rec get_compilation_job package =
+  let rec get_compilation_job link package =
     let name = package |> Package.opam |> OpamPackage.to_string in
     try Package.Map.find package !compilation_jobs
     with Not_found ->
@@ -79,22 +66,50 @@ let compile ~generation ~config
            let dependencies =
              Package.universe package |> Package.Universe.deps
            in
+           let extra_deps =
+            Package.universe package |> Package.Universe.extra_link_deps
+           in
+           begin
+            if List.length extra_deps > 0 then
+              Logs.info (fun m -> m "Extra link deps for %s: %s"
+                name
+                (extra_deps |> List.map (fun x -> x |> Package.opam |> OpamPackage.to_string) |> String.concat ", "))
+            end;
            let compile_dependencies_names =
              List.filter_map
                (fun p ->
-                 get_compilation_job p |> Option.map (fun (a, _) -> (p, a)))
+                 get_compilation_job false p |> Option.map (fun (a, _) -> (p, a)))
                dependencies
            in
+           let link_dependencies_names =
+            if link then
+              List.filter_map
+                (fun p ->
+                  get_compilation_job false p |> Option.map (fun (a, _) -> (p, a)))
+                extra_deps
+            else
+              []
+            in
            let compile_dependencies =
              compile_dependencies_names |> List.map snd
            in
+           let link_dependencies =
+              link_dependencies_names |> List.map snd
+           in
+
            let blessing =
              OpamPackage.Map.find (Package.opam package) blessed
              |> Current.map (fun b -> Package.Blessing.Set.get b package)
            in
+           let deps, jobty = match List.length extra_deps, link with
+             | 0, _ -> (Current.list_seq compile_dependencies), Compile.CompileAndLink
+             | _, false -> (Current.list_seq compile_dependencies), Compile.CompileOnly
+             | _, true -> (Current.list_seq (compile_dependencies @ link_dependencies)), Compile.LinkOnly
+           in
            let node =
              Compile.v ~generation ~config ~name ~blessing
-               ~deps:(Current.list_seq compile_dependencies)
+               ~deps
+               ~jobty
                prep
            in
            let monitor =
@@ -113,29 +128,10 @@ let compile ~generation ~config
       job
   in
   let get_compilation_node package _ =
-    get_compilation_job package
-    (* |> Option.map @@ fun (compile, monitor) ->
-       let node =
-         Html.v ~generation ~config
-           ~name:(package |> Package.opam |> OpamPackage.to_string)
-           ~voodoo:voodoo_gen compile
-       in
-       let monitor =
-         match monitor with
-         | Monitor.Seq lst -> Monitor.Seq (lst @ [ ("do-html", Item node) ])
-         | _ -> assert false
-       in
-       let package_status = Monitor.pipeline_state monitor in
-       let _index =
-         (* let+ step_list = summarise "" [] monitor  *)
-         (* DEBUGGING THE MEMORY BLOAT -- Skip the summarising for now *)
-         let+ pipeline_id in
-         Index.record package pipeline_id package_status []
-       in
-       (node, monitor) *)
+    get_compilation_job true package
   in
-  Package.Map.filter_map get_compilation_node preps |> Package.Map.bindings
-
+  let compile_jobs = Package.Map.filter_map get_compilation_node preps |> Package.Map.bindings in
+  compile_jobs
 
 let prep ~config 
   ~opamfiles (all:Package.Set.t) =
@@ -333,8 +329,8 @@ let v ~config ~opam ~monitor ~migrations () =
   let weekly = Current_cache.Schedule.v ~valid_for:(Duration.of_day 7) () in
 
   let repo_opam =
-    Current_git.clone ~schedule:weekly
-      "https://github.com/ocaml/opam-repository.git"
+    Current_git.clone ~schedule:weekly ~gref:"test"
+      "https://github.com/jonludlam/opam-repository.git"
   in
 
   let opamfiles = 

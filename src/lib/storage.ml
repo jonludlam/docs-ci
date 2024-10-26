@@ -49,6 +49,9 @@ let folder repository package =
     Base.folder (to_base_repo repository)
     // base_folder ~blessed ~prep:(repository = Prep) package)
 
+let cache repository package =
+  folder repository package
+  
 let split packages =
   let rec take n l =
     match n,l with

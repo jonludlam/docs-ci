@@ -58,6 +58,7 @@ let build _ job { Key.repo; packages } =
           match Bos.OS.File.read Fpath.(path // package_path pkg / "opam") with
           | Ok content ->
             let f = OpamFile.OPAM.read_from_string content in
+            let x = OpamFile.OPAM.depends f in
             OpamFile.OPAM.depexts f <> []
           | _ -> false
         in

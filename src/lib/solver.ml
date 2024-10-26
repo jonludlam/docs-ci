@@ -68,13 +68,13 @@ let perform_constrained_solve ~solver ~pool ~job ~(platform : Platform.t) ~opam
           Fmt.error_msg "no platform:\n%s" (String.concat "\n" (List.rev !logs))
       | Ok [ x ] ->
           Current.Job.log job "Here we go";
-          let solution =
+          let solution u =
             List.map
               (fun (a, _opamfile, b) ->
                 (OpamPackage.of_string a, List.map OpamPackage.of_string b))
-              x.packages
+              u
           in
-          Ok (solution, x.commit)
+          Ok (solution x.packages.compile_universes, solution x.packages.link_universes, x.commit)
       | Ok _ -> Fmt.error_msg "??"
       | Error (`Msg msg) -> Fmt.error_msg "Error from solver: %s" msg)
     (fun exn ->
@@ -215,13 +215,13 @@ module Solver = struct
           let root = Track.pkg pkg in
           let result =
             match res with
-            | Ok (packages, commit) ->
+            | Ok (compile_packages, link_packages, commit) ->
                 Current.Job.log job "Packages returned: ";
                   begin try
-                    let root_deps = List.assoc root packages in
+                    let root_deps = List.assoc root compile_packages in
                     let ocaml_version = List.find
                       (fun p -> OpamPackage.name_to_string p = "ocaml-base-compiler") (root::root_deps) |> OpamPackage.version_to_string |> Ocaml_version.of_string_exn in
-                      Ok (Package.make ~ocaml_version ~blacklist ~commit ~root packages)                    
+                      Ok (Package.make ~ocaml_version ~blacklist ~commit ~root compile_packages link_packages)                    
                     with Not_found ->
                       Current.Job.log job "Package %s does not require OCaml" (OpamPackage.to_string root);
                       Error ("No OCaml dependency")  

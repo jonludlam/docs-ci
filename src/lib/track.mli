@@ -2,7 +2,6 @@ type t [@@deriving yojson]
 
 val digest : t -> string
 val pkg : t -> OpamPackage.t
-
 val v :
   limit:int option ->
   filter:string list ->
