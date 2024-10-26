@@ -19,15 +19,21 @@ module rec Universe : sig
   val deps : t -> Package.t list
   val pp : t Fmt.t
   val ocaml_version : t -> Ocaml_version.t
+  val set_extra_link_deps : t -> Package.t list -> unit
+  val extra_link_deps : t -> Package.t list
   val v : Ocaml_version.t -> Package.t list -> t
   val compare : t -> t -> int
 end = struct
-  type t = { ocaml_version : Ocaml_version.t; hash : string; deps : Package.t list } [@@deriving yojson]
+  type t = { ocaml_version : Ocaml_version.t; hash : string; deps : Package.t list; mutable extra_link_deps : Package.t list; } [@@deriving yojson]
 
   let hash t = t.hash
   let deps t = t.deps
 
   let ocaml_version t = t.ocaml_version
+
+  let set_extra_link_deps t eld = t.extra_link_deps <- eld
+
+  let extra_link_deps t = t.extra_link_deps
 
   let v ocaml_version deps =
     let str =
@@ -40,7 +46,7 @@ end = struct
     in
     let hash = Digest.to_hex (Digest.string str) in
     if hash = "d41d8cd98f00b204e9800998ecf8427e" then failwith "Empty digest!";
-    { ocaml_version; hash; deps }
+    { ocaml_version; hash; deps; extra_link_deps = [] }
 
   let pp f { hash; _ } = Fmt.pf f "%s" hash
   let compare { hash; _ } { hash = hash2; _ } = String.compare hash hash2
@@ -63,6 +69,7 @@ and Package : sig
     blacklist:string list ->
     commit:string ->
     root:OpamPackage.t ->
+    (OpamPackage.t * OpamPackage.t list) list ->
     (OpamPackage.t * OpamPackage.t list) list ->
     t
 end = struct
@@ -94,10 +101,11 @@ end = struct
     |> List.filter (fun (pkg, _) -> filter pkg)
     |> List.map (fun (pkg, deps) -> (pkg, List.filter filter deps))
 
-  let make ~ocaml_version ~blacklist ~commit ~root deps =
-    let deps = remove_blacklisted_packages ~blacklist deps in
+  let make ~ocaml_version ~blacklist ~commit ~root compile_deps link_deps =
+    let compile_deps = remove_blacklisted_packages ~blacklist compile_deps in
+    let link_deps = remove_blacklisted_packages ~blacklist link_deps in
     let memo = ref OpamPackage.Map.empty in
-    let package_deps = OpamPackage.Map.of_list deps in
+    let package_deps = OpamPackage.Map.of_list compile_deps in
     let rec obtain package =
       match OpamPackage.Map.find_opt package !memo with
       | Some package -> package
@@ -112,7 +120,19 @@ end = struct
           memo := OpamPackage.Map.add package pkg !memo;
           pkg
     in
-    obtain root
+    let results = obtain root in
+    OpamPackage.Map.iter (fun opam_package pkg ->
+      let compile_deps = List.assoc opam_package compile_deps |> OpamPackage.Set.of_list in
+      let link_deps = List.assoc opam_package link_deps |> OpamPackage.Set.of_list in
+      let extras = OpamPackage.Set.diff link_deps compile_deps in
+      let extras = 
+        if OpamPackage.Set.cardinal extras = 0 then []
+        else OpamPackage.Set.(elements (add opam_package extras))
+      in
+        let extras = List.map (fun opam_package -> obtain opam_package) extras in
+      Universe.set_extra_link_deps pkg.universe extras
+      ) !memo;
+    results
 end
 
 include Package
@@ -138,7 +158,7 @@ let topo_sort packages =
 
   
 
-let all_deps pkg = pkg :: (pkg |> universe |> Universe.deps)
+let all_deps pkg = pkg :: (pkg |> universe |> Universe.deps) @ (pkg |> universe |> Universe.extra_link_deps)
 
 let ocaml_version pkg =
   pkg |> universe |> Universe.ocaml_version
