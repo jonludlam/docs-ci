@@ -71,6 +71,8 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~config ~
         (Storage.Base.generation_folder generation);
       Fmt.str "mkdir -p %a" Fpath.pp linked_folder;
       Misc.tar_cmd linked_folder;
+      Fmt.str "echo raw_folder: %s" (Fpath.to_string raw_folder);
+      Fmt.str "~/docs/docs-ci-scripts/gen_status_json.sh %s" (Fpath.to_string raw_folder);
       Fmt.str "time rsync -aR ./%s %s:%s/."
         Fpath.(to_string (parent linked_folder))
         (Config.Ssh.host ssh)
@@ -108,21 +110,24 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~config ~
            [ "/home/opam/odoc";]
            ~dst:"/home/opam/";
          copy ~from:(`Build "odoc_driver")
-           [ "/home/opam/odoc_driver"; "/home/opam/sherlodoc" ]
+           [ "/home/opam/odoc_driver"; "/home/opam/sherlodoc"; "/home/opam/odoc-md"; ]
            ~dst:"/home/opam/";
          run "mv ~/sherlodoc $(opam config var bin)/sherlodoc";
          run ~network:Misc.network "sudo apt install -y jq";
-         run ~network:Misc.network "git clone https://github.com/jonludlam/docs-ci-scripts.git && echo HI8";
+         run ~network:Misc.network "git clone https://github.com/jonludlam/docs-ci-scripts.git && echo HI16";
          (* obtain the compiled dependencies, prep folder and extract it *)
        ] @ [ run ~network:Misc.network ~cache:compile_caches ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list
             ((Fmt.str "ssh -MNf %s" (Config.Ssh.host ssh)) ::
+            (* "rm -rf /home/opam/.cache/compile/*" :: *)
             (common @ [
                 Fmt.str
-                  "time opam exec -- /home/opam/odoc_driver --voodoo --verbose --odoc /home/opam/odoc --odoc-dir compile --odocl-dir linked --html-dir %s --stats --no-pkglist --package %s %s %s"
+                  "time opam exec -- /home/opam/odoc_driver voodoo --verbose --odoc /home/opam/odoc --odoc-md /home/opam/odoc-md --odoc-dir compile --odocl-dir linked --html-dir %s --stats %s %s %s"
                   (Fpath.to_string (Storage.Base.folder (HtmlRaw generation)))
                   name
-                  (match jobty with CompileAndLink -> "" | CompileOnly -> "--compile-only" | LinkOnly -> "--no-compile")
+                  (match jobty with CompileAndLink -> "" | CompileOnly -> "--actions compile-only" | LinkOnly -> "--actions link-and-gen")
                   (match blessing with Blessed -> "--blessed" | Universe -> "");
+                (* Fmt.str "/home/opam/odoc support-files -o %s"
+                  (Fpath.to_string (Storage.Base.folder (HtmlRaw generation))); *)
                 Fmt.str "jq . driver-benchmarks.json";]
                 @ (match jobty with LinkOnly -> [] | _ -> post_compile)
                 @ (match jobty with CompileOnly -> [] | _ -> post_link_and_html))) ])
@@ -145,7 +150,7 @@ let spec_failure ~ssh ~base ~config ~blessing ~generation prep =
          run "sudo chown opam:opam . ";
          (* Import odoc and voodoo-do *)
          copy ~from:(`Build "tools")
-           [ "/home/opam/odoc"; "/home/opam/odoc_driver"; "/home/opam/sherlodoc" ]
+           [ "/home/opam/odoc"; "/home/opam/odoc_driver"; "/home/opam/sherlodoc"; "/home/opam/odoc-md" ]
            ~dst:"/home/opam/";
          run "mv ~/odoc $(opam config var bin)/odoc";
          run "mv ~/sherlodoc $(opam config var bin)/sherlodoc";

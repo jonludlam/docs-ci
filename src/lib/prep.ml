@@ -58,7 +58,7 @@ let build _ job { Key.repo; packages } =
           match Bos.OS.File.read Fpath.(path // package_path pkg / "opam") with
           | Ok content ->
             let f = OpamFile.OPAM.read_from_string content in
-            let x = OpamFile.OPAM.depends f in
+            let _x = OpamFile.OPAM.depends f in
             OpamFile.OPAM.depexts f <> []
           | _ -> false
         in
@@ -166,6 +166,10 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
   let all_deps = Package.universe prep |> Package.Universe.deps in
 
   let ocaml_version = Package.ocaml_version prep in
+  let prep_caches =
+    [Obuilder_spec.Cache.v "prep-cache" ~target:"/home/opam/.cache/prep"] in
+
+  let cache = cache @ prep_caches in
 
   let packages_topo_list =
     all_deps
@@ -224,10 +228,12 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
 
   let install_cmds = List.map (run ~network "%s") (Misc.Cmd.list_list install_all_opamfiles) in
 
-  let install_packages = List.flatten @@ List.map (fun pkg ->
+  let install_packages =
+    "echo \"START OF INSTALL PACKAGES\" && date" :: (
+    List.flatten @@ List.map (fun pkg ->
     match List.assoc_opt (Package.opam pkg) opamfiles with
     | Some (_has_depext, _opamfiles) ->
-      [ Fmt.str "time rsync -r %s:%s/%s/ /tmp/ && time tar -C / -xf /tmp/content.tar"
+      [ Fmt.str "time ~/docs/docs-ci-scripts/download_prep.sh %s %s %s"
           (Config.Ssh.host ssh)
           (Config.Ssh.storage_folder ssh)
           (Fpath.to_string (Storage.folder Storage.Prep0 pkg))
@@ -235,7 +241,7 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
     | None ->
       [ Fmt.str "echo Failed to find opamfiles for %s"
           (Package.opam pkg |> OpamPackage.to_string)
-      ]) packages_topo_list
+      ]) packages_topo_list)
   in
 
   let any_depexts = List.exists (fun pkg -> match List.assoc_opt (Package.opam pkg) opamfiles with | Some (has_depext, _) -> has_depext | None -> false) packages_topo_list in
@@ -257,11 +263,13 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
   in
 
   let post_steps =
-    [ "find $(opam var prefix) -maxdepth 3 | sort";
+    [ "echo \"START OF BUILD PACKAGE\" && date";
+
       "opam update && /home/opam/opamh make-state --output $(opam var prefix)/.opam-switch/switch-state";
       if any_depexts then Fmt.str "opam depext %s" (OpamPackage.to_string (Package.opam prep)) else "echo no depexts";
       Fmt.str "(opam update && opam install -vv --debug-level=2 --confirm-level=unsafe-yes --solver=builtin-0install %s 2>&1 && opam clean -s | tee ~/opam.err.log) || echo \
           'Failed to install all packages'" (Package.opam prep |> OpamPackage.to_string);
+      "echo \"END OF BUILD PACKAGE\" && date";
       Fmt.str "mkdir -p %s" (Fpath.to_string prep_folder);
       Fmt.str "/home/opam/opamh save --output=%s/content.tar %s" (Fpath.to_string prep_folder) (Package.opam prep |> OpamPackage.name |> OpamPackage.Name.to_string);
       Fmt.str "time rsync -aR ./%s %s:%s/."
@@ -305,6 +313,12 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
          env "DUNE_CACHE" (if dune_cache_enabled then "enabled" else "disabled");
          env "DUNE_CACHE_TRANSPORT" "direct";
          env "DUNE_CACHE_DUPLICATION" "copy";
+         run "mkdir /home/opam/docs";
+         (* Pre-install some of the most popular packages *)
+         run ~network:Misc.network "sudo apt-get update && sudo apt-get install -qq -yy pkg-config libgmp-dev libev-dev libssl-dev zlib1g-dev libpcre3-dev libffi-dev m4 xdot autoconf libsqlite3-dev cmake libcurl4-gnutls-dev libpcre2-dev libsdl2-dev time python3 libexpat1-dev libcairo2-dev";
+
+         run ~network:Misc.network "git clone https://github.com/jonludlam/docs-ci-scripts.git /home/opam/docs/docs-ci-scripts && echo HI16";
+
          (* run ~network ~cache ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list install_packages *)
        ] @ install_cmds @ [
          run ~network ~cache ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list (persistent_ssh @ pkg_opamfile @ extra_opamfiles @ install_packages) ] @ [
