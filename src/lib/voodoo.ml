@@ -53,10 +53,11 @@ module OdocDriver = struct
               ["sudo apt-get update";
                 Fmt.str "opam pin -ny sherlodoc.dev %s"
                   sherlodoc_pin;              
-                Fmt.str "opam pin -ny odoc-parser.dev %s && opam pin -ny odoc.dev %s && opam pin -ny odoc-driver.dev %s"
-                  odoc_pin odoc_pin odoc_pin;
+                Fmt.str "opam pin -ny odoc-parser.dev %s && opam pin -ny odoc-md.dev %s &&  opam pin -ny odoc.dev %s && opam pin -ny odoc-driver.dev %s"
+                  odoc_pin odoc_pin odoc_pin odoc_pin;
+                "opam install -y odoc-md";
                 "opam install -y odoc-driver sherlodoc";
-                 "cp $(opam config var bin)/odoc_driver $(opam config var bin)/sherlodoc /home/opam";
+                 "cp $(opam config var bin)/odoc_driver $(opam config var bin)/sherlodoc $(opam config var bin)/odoc-md /home/opam";
                 "rm -rf $(opam config var prefix)"]            
          ]
   
