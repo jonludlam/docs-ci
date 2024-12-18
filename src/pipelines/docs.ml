@@ -146,6 +146,9 @@ let prep ~config
         let dependencies =
           Package.universe package |> Package.Universe.deps
         in
+        let dep_opams = List.map Package.opam dependencies |> OpamPackage.Set.of_list in
+        let opams = OpamPackage.Set.add (Package.opam package) dep_opams in
+
         let prep_dependencies_names =
           List.map
             (fun p ->
@@ -156,6 +159,9 @@ let prep ~config
           prep_dependencies_names |> List.map snd
         in
         let base_image = Misc.get_base_image package in
+        let opamfiles = Current.map (fun x ->
+          OpamPackage.Map.filter (fun p _ -> OpamPackage.Set.mem p opams) x
+          ) opamfiles in
         let node =
           Prep.v ~config
               ~deps:(Current.list_seq prep_dependencies)
