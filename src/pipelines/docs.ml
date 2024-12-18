@@ -149,8 +149,6 @@ let prep ~config
     OpamPackage.Set.of_list (List.map (fun s -> OpamPackage.of_string s) defaults) in
 
   let rec get_prep_job package =
-    Logs.info (fun m -> m "Getting prep job for package %s"
-      (package |> Package.opam |> OpamPackage.to_string));
     try Package.Map.find package !prep_jobs
     with Not_found ->
       let job =
