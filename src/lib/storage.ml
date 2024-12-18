@@ -1,5 +1,5 @@
 module Base = struct
-  type repository = HtmlRaw of Epoch.t | Linked of Epoch.t | Compile | Prep | Prep0
+  type repository = HtmlRaw of Epoch.t | Linked of Epoch.t | Compile of Epoch.t | Prep | Prep0
 
   let generation_folder generation =
     Fpath.(v ("epoch-" ^ Epoch.digest generation))
@@ -9,7 +9,8 @@ module Base = struct
         Fpath.(generation_folder generation / "html-raw")
     | Linked generation ->
         Fpath.(generation_folder generation / "linked")
-    | Compile -> Fpath.v "compile"
+    | Compile generation ->
+        Fpath.(generation_folder generation / "compile")
     | Prep -> Fpath.v "prep"
     | Prep0 -> Fpath.v "prep0"
 end
@@ -17,14 +18,14 @@ end
 type repository =
   | HtmlRaw of (Epoch.t * Package.Blessing.t)
   | Linked of (Epoch.t * Package.Blessing.t)
-  | Compile of Package.Blessing.t
+  | Compile of (Epoch.t * Package.Blessing.t)
   | Prep
   | Prep0
 
 let to_base_repo = function
   | HtmlRaw (t, _) -> Base.HtmlRaw t
   | Linked (t, _) -> Linked t
-  | Compile _ -> Compile
+  | Compile (t, _) -> Compile t
   | Prep -> Prep
   | Prep0 -> Prep0
 
@@ -40,7 +41,7 @@ let base_folder ~blessed ~prep package =
 let folder repository package =
   let blessed =
     match repository with
-    | HtmlRaw (_, b) | Linked (_, b) | Compile b -> b
+    | HtmlRaw (_, b) | Linked (_, b) | Compile (_, b) -> b
     | Prep -> Universe
     | Prep0 -> Universe
   in

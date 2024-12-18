@@ -198,10 +198,10 @@ let cmdliner =
 
 (* odoc pinned *)
 let odoc _ =
-  "https://github.com/jonludlam/odoc.git#784a7658c26768afb9d8fd661cde5231be57f996"
+  "https://github.com/ocaml/odoc.git#147a8f17dd5cc173e034d5b1a4c09f0b14eeeae5"
 
 let sherlodoc _ =
-  "https://github.com/panglesd/sherlodoc.git#451f0197792836d6e5e2ad3679a040d31f4dd30e"
+  "https://github.com/ocaml/odoc.git#147a8f17dd5cc173e034d5b1a4c09f0b14eeeae5"
 
 let pool _ = "linux-x86_64"
 let jobs t = t.jobs
