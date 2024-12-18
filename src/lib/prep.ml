@@ -14,6 +14,49 @@ module OpamPackage = struct
         | None -> Error "failed to parse version")
     | _ -> Error "failed to run version"
 end
+
+let opam_cache_version="v1"
+module Cache = struct
+  let fname id pkg =
+    let name = OpamPackage.to_string pkg in
+    let fname = name ^ "-opam.tar.bz2" in
+    Fpath.(Current.state_dir id / name / fname )
+
+  let id = "opam-files-cache-" ^ opam_cache_version
+
+  type cache_value = (bool * string)
+
+  let fname = fname id
+
+  let mem job pkg =
+    let fname = fname pkg in
+    match Bos.OS.Path.exists fname with
+    | Ok true -> true
+    | Ok false -> false
+    | Error (`Msg m) ->
+      Current.Job.log job "Error checking for opam files cache for package %s: %s" (OpamPackage.to_string pkg) m;
+      false
+
+  let write ((pkg, value) : OpamPackage.t * cache_value) =
+    let fname = fname pkg in
+    let _ = Bos.OS.Dir.create (fst (Fpath.split_base fname)) |> Result.get_ok in
+    let file = open_out (Fpath.to_string fname) in
+    Marshal.to_channel file value [];
+    close_out file
+
+  let read job pkg : cache_value option =
+    let fname = fname pkg in
+    try
+      let file = open_in (Fpath.to_string fname) in
+      let result = Marshal.from_channel file in
+      close_in file;
+      Some result
+    with Failure _  | Sys_error _ as e ->
+      Current.Job.log job "Error reading opam files cache for package %s: %s" (OpamPackage.to_string pkg) (Printexc.to_string e);
+      None
+end
+
+
 module OpamFiles = struct
 
   type t = No_context
@@ -30,11 +73,19 @@ module OpamFiles = struct
   end
 
   module Value = struct
-    type t = (OpamPackage.t * (bool * string)) list
-    [@@deriving yojson]
+    type ('a, 'b) r = ('a, 'b) result =
+      | Ok of 'a
+      | Error of 'b [@@deriving yojson]
 
+    type serialisable = (OpamPackage.t * ((bool * string), [`Msg of string]) r) list
+      [@@deriving yojson]
+
+    type t = ((bool * string), [`Msg of string]) r OpamPackage.Map.t
+
+    let to_yojson t = t |> OpamPackage.Map.bindings |> serialisable_to_yojson
+    let of_yojson t = t |> serialisable_of_yojson |> Result.map OpamPackage.Map.of_list  
     let marshal t = t |> to_yojson |> Yojson.Safe.to_string
-    let unmarshal t = t |> Yojson.Safe.from_string |> of_yojson |> Result.get_ok
+    let unmarshal t = t |> Yojson.Safe.from_string |> of_yojson |> Result.get_ok   
 
   end
 
@@ -48,6 +99,7 @@ let build _ job { Key.repo; packages } =
   in
   let open Lwt.Infix in
   Current.Job.start ~pool ~level:Harmless job >>= fun () ->
+  let to_do = List.filter (fun x -> not (Cache.mem job x)) packages in
   Current_git.with_checkout ~job repo (fun path ->
     Current.Process.with_tmpdir ~prefix:"opam-files" (fun fp ->
       let open Lwt.Infix in
@@ -80,16 +132,26 @@ let build _ job { Key.repo; packages } =
       | Ok () -> begin
         let res = Bos.OS.File.read tarfile in
         match res with
-        | Ok contents -> Lwt.return_ok (pkg, (has_depext, Base64.encode_string contents))
-        | Error (`Msg m) -> Lwt.return_error (`Msg m)
+        | Ok contents ->
+          Cache.write (pkg, (has_depext, Base64.encode_string contents));
+          Lwt.return (pkg, Ok ())
+        | Error (`Msg m) -> Lwt.return (pkg, Error (`Msg m))
         end
-      | Error (`Msg m) -> Lwt.return_error (`Msg m)
-      ) packages in
-      r >>= fun pkgs ->
-      Lwt.return (Ok (List.filter_map (function | Ok x -> Some x | _ -> None) pkgs))
-      
+      | Error (`Msg m) -> Lwt.return (pkg, Error (`Msg m))
+      ) to_do in
+      r >>= fun results ->
+        let results_map = OpamPackage.Map.of_list results in
+        List.map (fun x ->
+          match Cache.read job x with
+          | Some v -> (x, Ok v)
+          | None -> begin
+            match OpamPackage.Map.find x results_map with
+            | Error (`Msg m) -> (x, Error (`Msg m))
+            | Ok () -> (x, Error (`Msg "Failed to read cache after writing"))
+            | exception Not_found ->
+              (x, Error (`Msg "Didn't even try to solve for package"))
+          end) packages |> OpamPackage.Map.of_list |> Lwt.return_ok
       ))
-
   let pp f { Key.repo; packages } =
     Fmt.pf f "opamfiles\n%a\n%a" Current_git.Commit.pp_short repo
       (Fmt.list (Fmt.of_to_string OpamPackage.to_string)) packages
@@ -220,10 +282,13 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
   in
 
   let install_all_opamfiles = List.filter_map (fun pkg ->
-    match List.assoc_opt (Package.opam pkg) opamfiles with
-    | Some (_, opamfiles) ->
+    match OpamPackage.Map.find (Package.opam pkg) opamfiles with
+    | Ok (_, opamfiles) ->
       Some (install_opamfiles (Package.opam pkg) opamfiles)
-    | None -> None) packages_topo_list
+    | Error (`Msg _m) ->
+      None
+    | exception Not_found ->
+      None) packages_topo_list
   in
 
   let install_cmds = List.map (run ~network "%s") (Misc.Cmd.list_list install_all_opamfiles) in
@@ -231,35 +296,35 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
   let install_packages =
     "echo \"START OF INSTALL PACKAGES\" && date" :: (
     List.flatten @@ List.map (fun pkg ->
-    match List.assoc_opt (Package.opam pkg) opamfiles with
-    | Some (_has_depext, _opamfiles) ->
+    match OpamPackage.Map.find (Package.opam pkg) opamfiles with
+    | Ok (_has_depext, _opamfiles) ->
       [ Fmt.str "time ~/docs/docs-ci-scripts/download_prep.sh %s %s %s"
           (Config.Ssh.host ssh)
           (Config.Ssh.storage_folder ssh)
           (Fpath.to_string (Storage.folder Storage.Prep0 pkg))
       ]
-    | None ->
+    | Error _ | exception _ ->
       [ Fmt.str "echo Failed to find opamfiles for %s"
           (Package.opam pkg |> OpamPackage.to_string)
       ]) packages_topo_list)
   in
 
-  let any_depexts = List.exists (fun pkg -> match List.assoc_opt (Package.opam pkg) opamfiles with | Some (has_depext, _) -> has_depext | None -> false) packages_topo_list in
+  let any_depexts = List.exists (fun pkg -> match OpamPackage.Map.find (Package.opam pkg) opamfiles with | Ok (has_depext, _) -> has_depext | Error _ | exception _ -> false) packages_topo_list in
 
   let extra_opamfiles =
     List.flatten (List.map (fun pkg ->
-      match List.assoc_opt pkg opamfiles with
-      | Some (_has_depext, opamfiles) ->
+      match OpamPackage.Map.find pkg opamfiles with
+      | Ok (_has_depext, opamfiles) ->
           [ install_opamfiles pkg opamfiles ]
-      | _ -> [ Fmt.str "echo Missing %s" (OpamPackage.to_string pkg)]) (add_base ocaml_version [])
+      | _ | exception _ -> [ Fmt.str "echo Missing %s" (OpamPackage.to_string pkg)]) (add_base ocaml_version [])
        )
   in
 
   let pkg_opamfile =
-    (match List.assoc_opt (Package.opam prep) opamfiles with
-      | Some (_has_depext, opamfiles) ->
+    (match OpamPackage.Map.find (Package.opam prep) opamfiles with
+      | Ok (_has_depext, opamfiles) ->
         [ install_opamfiles (Package.opam prep) opamfiles ]
-      | None -> [])
+      | Error _ | exception _ -> [])
   in
 
   let post_steps =
@@ -353,7 +418,7 @@ module Prep = struct
       base : Spec.t;
       tools_base : Spec.t;
       config : Config.t;
-      opamfiles : (OpamPackage.t * (bool * string)) list;
+      opamfiles : (bool * string) Current.or_error OpamPackage.Map.t;
     }
 
     let digest { prep; base = _; tools_base = _; config = _; opamfiles = _; } =
@@ -490,6 +555,7 @@ let weekly = Current_cache.Schedule.v ~valid_for:(Duration.of_day 7) ()
 
 let v ~config ~spec ~deps ~opamfiles ~prep =
   let open Current.Syntax in  
+  let opamfiles : OpamFiles.Value.t Current.t = opamfiles in
   Current.component "voodoo-prep %s" (prep |> Package.digest)
   |> let> spec and> opamfiles and> deps
   and> tools_base = Misc.default_base_image in

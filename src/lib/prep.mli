@@ -10,7 +10,7 @@ module OpamFiles :sig
   end
 
   module Value : sig
-    type t = (OpamPackage.t * (bool * string)) list
+    type t = ((bool * string), [`Msg of string]) result OpamPackage.Map.t
     [@@deriving yojson]
   end
 end
