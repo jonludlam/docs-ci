@@ -137,6 +137,17 @@ let prep ~config
   ~opamfiles (all:Package.Set.t) =
   let prep_jobs = ref Package.Map.empty in
 
+  let default_packages =
+    let defaults = [
+      "ocaml-options-vanilla.1";
+      "base-bigarray.base";
+      "base-domains.base";
+      "base-nnp.base";
+      "host-arch-x86_64.1";
+      "host-system-other.1";
+    ] in
+    OpamPackage.Set.of_list (List.map (fun s -> OpamPackage.of_string s) defaults) in
+
   let rec get_prep_job package =
     Logs.info (fun m -> m "Getting prep job for package %s"
       (package |> Package.opam |> OpamPackage.to_string));
@@ -160,7 +171,8 @@ let prep ~config
         in
         let base_image = Misc.get_base_image package in
         let opamfiles = Current.map (fun x ->
-          OpamPackage.Map.filter (fun p _ -> OpamPackage.Set.mem p opams) x
+          OpamPackage.Map.filter (fun p _ ->
+            OpamPackage.Set.mem p opams || OpamPackage.Set.mem p default_packages) x
           ) opamfiles in
         let node =
           Prep.v ~config
