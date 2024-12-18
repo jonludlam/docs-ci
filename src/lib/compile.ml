@@ -22,7 +22,7 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~config ~
   let package = Prep.package prep in
   let prep_folder = Storage.folder Prep package in
   let prep0_folder = Storage.folder Prep0 package in
-  let compile_folder = Storage.folder (Compile blessing) package in
+  let compile_folder = Storage.folder (Compile (generation, blessing)) package in
   let linked_folder = Storage.folder (Linked (generation, blessing)) package in
   let raw_folder = Storage.folder (HtmlRaw (generation, blessing)) package in
   let opam = package |> Package.opam in
@@ -39,21 +39,15 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~config ~
         ) in *)
   let common =
     (List.map (fun { blessing; package; _ } ->
-      let dir = Storage.folder (Compile blessing) package in
+      let dir = Storage.folder (Compile (generation, blessing)) package in
       Fmt.str "~/docs/docs-ci-scripts/download_compiled.sh %s %s %s %s" (Config.Ssh.host ssh) (Config.Ssh.storage_folder ssh) (Fpath.to_string dir) (Package.digest package ^ "-" ^  Epoch.digest generation)
       ) deps) @ 
        [Fmt.str "~/docs/docs-ci-scripts/get_prep_for_compile.sh %s %s %s %s" (Config.Ssh.host ssh) (Config.Ssh.storage_folder ssh) (Fpath.to_string prep0_folder) (Fpath.to_string prep_folder);
-
-        Fmt.str "mkdir -p %a" Fpath.pp compile_folder;
-        Fmt.str
-          "rm -f compile/packages.mld compile/page-packages.odoc \
-           compile/packages/*.mld compile/packages/*.odoc \
-           compile/packages/%s/*.odoc"
-          name;
         "export OCAMLRUNPAM=b";
   ] in
   let post_compile =
-    [Misc.tar_cmd compile_folder;
+    [
+    Misc.tar_cmd compile_folder;
     Fmt.str "time rsync -aR ./%s %s:%s/."
       (Fpath.to_string compile_folder)
       (Config.Ssh.host ssh)
@@ -96,7 +90,7 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~config ~
      ]
   in
   let compile_caches =
-    [Obuilder_spec.Cache.v "compile-cache" ~target:"/home/opam/.cache/compile"] in
+    [Obuilder_spec.Cache.v "compile-cache" ~target:(Fmt.str "/home/opam/.cache/%a/compile" Fpath.pp (Storage.Base.generation_folder generation))] in
   let odoc_driver = Voodoo.OdocDriver.spec ~base:odoc_driver_base ~odoc_pin ~sherlodoc_pin |> Spec.finish in
   base
   |> Spec.children ~name:"tools" tools
@@ -114,15 +108,15 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~config ~
            ~dst:"/home/opam/";
          run "mv ~/sherlodoc $(opam config var bin)/sherlodoc";
          run ~network:Misc.network "sudo apt install -y jq";
-         run ~network:Misc.network "git clone https://github.com/jonludlam/docs-ci-scripts.git && echo HI16";
+         run ~network:Misc.network "git clone https://github.com/jonludlam/docs-ci-scripts.git && echo HI18";
          (* obtain the compiled dependencies, prep folder and extract it *)
        ] @ [ run ~network:Misc.network ~cache:compile_caches ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list
             ((Fmt.str "ssh -MNf %s" (Config.Ssh.host ssh)) ::
             (* "rm -rf /home/opam/.cache/compile/*" :: *)
             (common @ [
                 Fmt.str
-                  "time opam exec -- /home/opam/odoc_driver voodoo --verbose --odoc /home/opam/odoc --odoc-md /home/opam/odoc-md --odoc-dir compile --odocl-dir linked --html-dir %s --stats %s %s %s"
-                  (Fpath.to_string (Storage.Base.folder (HtmlRaw generation)))
+                  "time opam exec -- /home/opam/odoc_driver voodoo --verbose --odoc /home/opam/odoc --odoc-md /home/opam/odoc-md --odoc-dir %a/compile --odocl-dir linked --html-dir %s --stats %s %s %s"
+                  Fpath.pp (Storage.Base.generation_folder generation) (Fpath.to_string (Storage.Base.folder (HtmlRaw generation)))
                   name
                   (match jobty with CompileAndLink -> "" | CompileOnly -> "--actions compile-only" | LinkOnly -> "--actions link-and-gen")
                   (match blessing with Blessed -> "--blessed" | Universe -> "");
@@ -136,7 +130,7 @@ let spec_failure ~ssh ~base ~config ~blessing ~generation prep =
   let open Obuilder_spec in
   let package = Prep.package prep in
   let prep_folder = Storage.folder Prep package in
-  let compile_folder = Storage.folder (Compile blessing) package in
+  let compile_folder = Storage.folder (Compile (generation, blessing)) package in
   let linked_folder = Storage.folder (Linked (generation, blessing)) package in
   let opam = Package.opam package in
   let name = OpamPackage.name_to_string opam in
