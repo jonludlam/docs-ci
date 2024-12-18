@@ -32,6 +32,8 @@ val result : t -> prep_result
 
 type prep
 
+val add_base : Ocaml_version.t -> OpamPackage.t list -> OpamPackage.t list
+
 val v :
   config:Config.t ->
   spec:Spec.t Current.t ->

@@ -137,17 +137,6 @@ let prep ~config
   ~opamfiles (all:Package.Set.t) =
   let prep_jobs = ref Package.Map.empty in
 
-  let default_packages =
-    let defaults = [
-      "ocaml-options-vanilla.1";
-      "base-bigarray.base";
-      "base-domains.base";
-      "base-nnp.base";
-      "host-arch-x86_64.1";
-      "host-system-other.1";
-    ] in
-    OpamPackage.Set.of_list (List.map (fun s -> OpamPackage.of_string s) defaults) in
-
   let rec get_prep_job package =
     try Package.Map.find package !prep_jobs
     with Not_found ->
@@ -156,8 +145,10 @@ let prep ~config
           Package.universe package |> Package.Universe.deps
         in
         let dep_opams = List.map Package.opam dependencies |> OpamPackage.Set.of_list in
-        let opams = OpamPackage.Set.add (Package.opam package) dep_opams in
-
+        let opams = OpamPackage.Set.add (Package.opam package) dep_opams |> OpamPackage.Set.to_list in
+        let ocaml_version = Package.ocaml_version package in
+        let all_opams = Prep.add_base ocaml_version opams in
+        
         let prep_dependencies_names =
           List.map
             (fun p ->
@@ -169,9 +160,7 @@ let prep ~config
         in
         let base_image = Misc.get_base_image package in
         let opamfiles = Current.map (fun x ->
-          OpamPackage.Map.filter (fun p _ ->
-            OpamPackage.Set.mem p opams || OpamPackage.Set.mem p default_packages) x
-          ) opamfiles in
+          List.filter_map (fun p -> try Some (p, OpamPackage.Map.find p x) with _ -> None) all_opams |> OpamPackage.Map.of_list) opamfiles in
         let node =
           Prep.v ~config
               ~deps:(Current.list_seq prep_dependencies)
@@ -354,6 +343,7 @@ let v ~config ~opam ~monitor ~migrations () =
     let> repo_opam in
     let packages = Package.Set.to_list all_packages |> List.map Package.opam |> OpamPackage.Set.of_list in
     let extra = [
+      "base-threads.base";
       "ocaml-options-vanilla.1";
       "base-bigarray.base";
       "base-domains.base";
