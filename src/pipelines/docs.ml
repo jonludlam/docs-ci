@@ -336,7 +336,7 @@ let v ~config ~opam ~monitor ~migrations () =
   let opamfiles = 
     Current.component "opamfiles" |>
     let> repo_opam in
-    let packages = Package.Set.to_list all_packages |> List.map Package.opam in
+    let packages = Package.Set.to_list all_packages |> List.map Package.opam |> OpamPackage.Set.of_list in
     let extra = [
       "ocaml-options-vanilla.1";
       "base-bigarray.base";
@@ -345,7 +345,7 @@ let v ~config ~opam ~monitor ~migrations () =
       "host-arch-x86_64.1";
       "host-system-other.1";
     ] in
-    let packages = List.rev_append (List.map OpamPackage.of_string extra) packages in
+    let packages = OpamPackage.Set.union (List.map OpamPackage.of_string extra |> OpamPackage.Set.of_list) packages |> OpamPackage.Set.to_list in
     Prep.OpamFilesCache.get No_context Prep.OpamFiles.Key.{ repo = repo_opam; packages }
   in
 
