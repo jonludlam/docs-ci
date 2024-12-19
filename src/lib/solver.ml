@@ -156,8 +156,8 @@ let get key =
 
 let failures t =
   t.failures
-  |> List.map (fun k ->
-         (Track.pkg k, Cache.read k |> Option.get |> Result.get_error))
+  |> List.filter_map (fun k ->
+         try Some (Track.pkg k, Cache.read k |> Option.get |> Result.get_error) with _ -> None)
 
 (* is solved ? *)
 
@@ -224,6 +224,7 @@ module Solver = struct
                       Ok (Package.make ~ocaml_version ~blacklist ~commit ~root compile_packages link_packages)                    
                     with Not_found ->
                       Current.Job.log job "Package %s does not require OCaml" (OpamPackage.to_string root);
+                      Current.Job.log job "Packages returned: %a" Fmt.(list (pair ~sep:sp string (list ~sep:sp string))) (List.map (fun (a, b) -> (OpamPackage.to_string a, List.map OpamPackage.to_string b)) compile_packages);
                       Error ("No OCaml dependency")  
                   end
             | Error (`Msg msg) ->
