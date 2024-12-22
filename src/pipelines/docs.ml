@@ -315,7 +315,7 @@ let v ~config ~opam ~monitor ~migrations () =
   Log.info (fun f -> f "2) Solver result");
   (* 3.a) From solver results, obtain a list of package.version.universe corresponding to prep jobs *)
   let all_packages_jobs =
-    solver_result |> Solver.keys |> List.rev_map Solver.get
+    solver_result |> Solver.keys |> List.filter_map (fun x -> try Some (Solver.get x) with _ -> None)
   in
   Log.info (fun f -> f "2.5) Solver result...");
   (* 3.b) Expand that list to all the obtainable package.version.universe *)
@@ -324,6 +324,7 @@ let v ~config ~opam ~monitor ~migrations () =
     all_packages_jobs
     |> List.rev_map Package.all_deps
     |> List.flatten
+    |> List.filter (fun pkg -> Ocaml_version.compare (Package.ocaml_version pkg) (Ocaml_version.Releases.v4_04_2) >= 0)
     |> Package.Set.of_list
   in
   Log.info (fun f -> f "3) All packages (%d)" (Package.Set.cardinal all_packages));

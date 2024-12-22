@@ -92,8 +92,7 @@ let perform_solve ~solver ~pool ~job ~(platform : Platform.t) ~opam track =
   in
   let latest = Ocaml_version.Releases.latest |> Ocaml_version.to_string in
   perform_constrained_solve ~solver ~pool ~job ~platform ~opam
-    (("ocaml-base-compiler", `Geq, Ocaml_version.(Releases.v4_04_1 |> to_string))
-    :: ("ocaml", `Leq, latest)
+    (("ocaml", `Leq, latest)
     :: constraints)
 
 let solver_version = "v2"
@@ -219,12 +218,16 @@ module Solver = struct
                 Current.Job.log job "Packages returned: ";
                   begin try
                     let root_deps = List.assoc root compile_packages in
+                    Current.Job.log job "Got the root package %s" (OpamPackage.to_string root);
                     let ocaml_version = List.find
-                      (fun p -> OpamPackage.name_to_string p = "ocaml-base-compiler") (root::root_deps) |> OpamPackage.version_to_string |> Ocaml_version.of_string_exn in
+                      (fun p ->
+                        Current.Job.log job "Checking %s" (OpamPackage.to_string p);
+                        List.mem (OpamPackage.name_to_string p) ["ocaml-base-compiler"; "ocaml"]) (root::root_deps) |> OpamPackage.version_to_string |> Ocaml_version.of_string_exn in
                       Ok (Package.make ~ocaml_version ~blacklist ~commit ~root compile_packages link_packages)                    
                     with Not_found ->
                       Current.Job.log job "Package %s does not require OCaml" (OpamPackage.to_string root);
-                      Current.Job.log job "Packages returned: %a" Fmt.(list (pair ~sep:sp string (list ~sep:sp string))) (List.map (fun (a, b) -> (OpamPackage.to_string a, List.map OpamPackage.to_string b)) compile_packages);
+                      let colon = Fmt.any ":" in
+                      Current.Job.log job "Packages returned: %a" Fmt.(list (pair ~sep:colon string (list ~sep:sp string))) (List.map (fun (a, b) -> (OpamPackage.to_string a, List.map OpamPackage.to_string b)) compile_packages);
                       Error ("No OCaml dependency")  
                   end
             | Error (`Msg msg) ->
