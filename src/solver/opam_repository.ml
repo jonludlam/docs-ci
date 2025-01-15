@@ -22,7 +22,7 @@ let clone () =
             "git";
             "clone";
             "--bare";
-            "https://github.com/jonludlam/opam-repository.git";
+            "https://github.com/ocaml/opam-repository.git";
             clone_path;
           |] )
 

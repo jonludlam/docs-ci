@@ -57,7 +57,7 @@ module OdocDriver = struct
                   odoc_pin odoc_pin odoc_pin odoc_pin;
                 "opam install -y odoc-md";
                 "opam install -y odoc-driver sherlodoc";
-                 "cp $(opam config var bin)/odoc_driver $(opam config var bin)/sherlodoc $(opam config var bin)/odoc-md /home/opam";
+                 "cp $(opam config var bin)/odoc_driver_voodoo $(opam config var bin)/sherlodoc $(opam config var bin)/odoc-md /home/opam";
                 "rm -rf $(opam config var prefix)"]            
          ]
   

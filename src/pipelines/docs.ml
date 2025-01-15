@@ -335,8 +335,8 @@ let v ~config ~opam ~monitor ~migrations () =
   let weekly = Current_cache.Schedule.v ~valid_for:(Duration.of_day 7) () in
 
   let repo_opam =
-    Current_git.clone ~schedule:weekly ~gref:"test"
-      "https://github.com/jonludlam/opam-repository.git"
+    Current_git.clone ~schedule:weekly
+      "https://github.com/ocaml/opam-repository.git"
   in
 
   let opamfiles = 
