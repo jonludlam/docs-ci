@@ -104,7 +104,7 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~config ~
            [ "/home/opam/odoc";]
            ~dst:"/home/opam/";
          copy ~from:(`Build "odoc_driver")
-           [ "/home/opam/odoc_driver"; "/home/opam/sherlodoc"; "/home/opam/odoc-md"; ]
+           [ "/home/opam/odoc_driver_voodoo"; "/home/opam/sherlodoc"; "/home/opam/odoc-md"; ]
            ~dst:"/home/opam/";
          run "mv ~/sherlodoc $(opam config var bin)/sherlodoc";
          run ~network:Misc.network "sudo apt install -y jq";
@@ -115,7 +115,7 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~config ~
             (* "rm -rf /home/opam/.cache/compile/*" :: *)
             (common @ [
                 Fmt.str
-                  "time opam exec -- /home/opam/odoc_driver voodoo --verbose --odoc /home/opam/odoc --odoc-md /home/opam/odoc-md --odoc-dir %a/compile --odocl-dir linked --html-dir %s --stats %s %s %s"
+                  "time opam exec -- /home/opam/odoc_driver_voodoo --verbose --odoc /home/opam/odoc --odoc-md /home/opam/odoc-md --odoc-dir %a/compile --odocl-dir linked --html-dir %s --stats %s %s %s"
                   Fpath.pp (Storage.Base.generation_folder generation) (Fpath.to_string (Storage.Base.folder (HtmlRaw generation)))
                   name
                   (match jobty with CompileAndLink -> "" | CompileOnly -> "--actions compile-only" | LinkOnly -> "--actions link-and-gen")
@@ -144,7 +144,7 @@ let spec_failure ~ssh ~base ~config ~blessing ~generation prep =
          run "sudo chown opam:opam . ";
          (* Import odoc and voodoo-do *)
          copy ~from:(`Build "tools")
-           [ "/home/opam/odoc"; "/home/opam/odoc_driver"; "/home/opam/sherlodoc"; "/home/opam/odoc-md" ]
+           [ "/home/opam/odoc"; "/home/opam/odoc_driver_voodoo"; "/home/opam/sherlodoc"; "/home/opam/odoc-md" ]
            ~dst:"/home/opam/";
          run "mv ~/odoc $(opam config var bin)/odoc";
          run "mv ~/sherlodoc $(opam config var bin)/sherlodoc";
