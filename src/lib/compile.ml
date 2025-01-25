@@ -122,7 +122,7 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~config ~
                   (match blessing with Blessed -> "--blessed" | Universe -> "");
                 (* Fmt.str "/home/opam/odoc support-files -o %s"
                   (Fpath.to_string (Storage.Base.folder (HtmlRaw generation))); *)
-                Fmt.str "jq . driver-benchmarks.json";]
+                Fmt.str "jq . driver-benchmarks.json || true";]
                 @ (match jobty with LinkOnly -> [] | _ -> post_compile)
                 @ (match jobty with CompileOnly -> [] | _ -> post_link_and_html))) ])
 
@@ -272,7 +272,7 @@ module Compile = struct
     let key { config = _; odoc; sherlodoc; deps; prep; blessing; base = _; odoc_driver_base = _; jobty } =
       let odoc_sherl_hash =
         Fmt.str "%s-%s" odoc sherlodoc |> Digest.string |> Digest.to_hex in
-      Fmt.str "v9-%s-%s-%s-%s-%a-%a"
+      Fmt.str "v10-%s-%s-%s-%s-%a-%a"
         odoc_sherl_hash
         (Package.Blessing.to_string blessing)
         (Prep.package prep |> Package.digest)

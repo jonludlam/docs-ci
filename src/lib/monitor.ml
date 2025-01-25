@@ -61,6 +61,7 @@ type t = {
   mutable preps : pipeline_tree Package.Map.t;
   mutable blessing : Package.Blessing.Set.t Current.t OpamPackage.Map.t;
   mutable trees : pipeline_tree Package.Map.t;
+  mutable html : Compile.t Current.t Package.Map.t;
 }
 
 let get_blessing t = t.blessing
@@ -72,6 +73,7 @@ let make () =
     preps = Package.Map.empty;
     blessing = OpamPackage.Map.empty;
     trees = Package.Map.empty;
+    html = Package.Map.empty;
   }
 
 let ( let* ) = Result.bind
@@ -259,6 +261,36 @@ let lookup_failed_pending t =
   |> List.filter (fun (_, st) -> st != Done)
   |> List.partition (fun (_, st) -> st == Failed)
 
+let lookup_failed_compiles t =
+  let open Tyxml_html in
+  let n = ref 0 in
+  let x = Package.Map.fold (fun _pkg current acc ->
+    let status : step_status =
+      match Current.observe current with
+      | Error (`Msg msg) -> incr n; Err msg
+      | Error (`Active _) -> Active
+      | Error `Blocked -> Blocked
+      | Ok _ -> OK
+    in
+    let container =
+      try
+        Current.Analysis.metadata current
+        |> Current.observe
+        |> Result.to_option
+        |> Option.join
+        |> function
+        | Some { job_id = Some job_id; _ } ->
+            fun v -> a ~a:[ a_href ("/job/" ^ job_id) ] [ txt v ]
+        | _ -> txt
+      with (* if current is not a primitive term *)
+      | Failure _ -> txt
+    in
+    match status with
+    | Err msg -> (container (Printf.sprintf "error: %s" msg)) :: acc
+    | _ -> acc)
+    t.html [] in
+  (x, !n)
+     
 let lookup_solve_failures t =
   OpamPackage.Map.keys t.solve_failures |> List.map (fun k -> (k, Failed))
 
@@ -338,8 +370,12 @@ let render_passing_packages t =
 let render_package_root t =
   let max_version = map_max_versions t in
   let failed, pending = lookup_failed_pending t in
+  let (failed_do, n) = lookup_failed_compiles t in
   let open Tyxml_html in
   [
+    h1 [ txt (Printf.sprintf "Failed 'do' jobs (out of %d checked)" n)];
+    ul (List.map (fun x ->
+      li [x]) failed_do);
     h1 [ txt "Failed packages" ];
     p [ txt ("total: " ^ Int.to_string (List.length failed)) ];
     ul
@@ -491,11 +527,12 @@ let collect_metrics t =
     (Metrics.package_status_total "solver_failed")
     (float_of_int (t.solve_failures |> OpamPackage.Map.keys |> List.length))
 
-let register t solve_failures preps blessing trees =
+let register t solve_failures preps blessing trees html =
   t.solve_failures <- OpamPackage.Map.of_list solve_failures;
   t.preps <- preps;
   t.blessing <- blessing;
-  t.trees <- trees
+  t.trees <- trees;
+  t.html <- html
 
 let handle_passing t ~engine:_ =
   object
