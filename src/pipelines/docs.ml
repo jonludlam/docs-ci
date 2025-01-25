@@ -438,7 +438,7 @@ let v ~config ~opam ~monitor ~migrations () =
         f "7.b) Inform the monitor: successes %i, failures %i" successes
           (List.length solver_failures));
     Monitor.register monitor solver_failures prep_pipeline_tree blessed
-      package_pipeline_tree
+      package_pipeline_tree html
   in
   Log.info (fun f -> f "7.b) Inform monitor");
 

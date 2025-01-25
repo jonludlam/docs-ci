@@ -44,6 +44,7 @@ val register :
   pipeline_tree Package.Map.t ->
   Package.Blessing.Set.t Current.t OpamPackage.Map.t ->
   pipeline_tree Package.Map.t ->
+  Compile.t Current.t Package.Map.t ->
   unit
 (** Register Current.t values for each package in the CI system. *)
 
