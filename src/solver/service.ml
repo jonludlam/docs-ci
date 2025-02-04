@@ -70,9 +70,10 @@ end = struct
     Lwt_io.write worker#stdin request_str >>= fun () ->
     Lwt_io.read_line worker#stdout >>= fun time ->
     Lwt_io.read_line worker#stdout >>= fun len ->
-    match Astring.String.to_int len with
+    match Astring.String.to_float len with
     | None -> Fmt.failwith "Bad frame from worker: time=%S len=%S" time len
-    | Some len -> (
+    | Some lenf -> (
+        let len = int_of_float lenf in
         let buf = Bytes.create len in
         Lwt_io.read_into_exactly worker#stdout buf 0 len >|= fun () ->
         let results = Bytes.unsafe_to_string buf in
