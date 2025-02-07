@@ -55,10 +55,16 @@ let compile ~generation ~config
     ~(blessed : Package.Blessing.Set.t Current.t OpamPackage.Map.t)
     (preps : ((Prep.t Current.t * _) Package.Map.t)) =
   let compilation_jobs = ref Package.Map.empty in
+  let link_jobs = ref Package.Map.empty in
 
   let rec get_compilation_job link package =
     let name = package |> Package.opam |> OpamPackage.to_string in
-    try Package.Map.find package !compilation_jobs
+    let extra_deps =
+      Package.universe package |> Package.Universe.extra_link_deps
+     in
+    Logs.info (fun m -> m "Getting compilation job for %s (link=%b)" name link);
+    let job_cache = if link then link_jobs else compilation_jobs in
+    try Package.Map.find package !job_cache
     with Not_found ->
       let job =
         Package.Map.find_opt package preps
@@ -66,14 +72,11 @@ let compile ~generation ~config
            let dependencies =
              Package.universe package |> Package.Universe.deps
            in
-           let extra_deps =
-            Package.universe package |> Package.Universe.extra_link_deps
-           in
            begin
             if List.length extra_deps > 0 then
-              Logs.info (fun m -> m "Extra link deps for %s: %s"
+              Logs.info (fun m -> m "Extra link deps for %s: %s (link: %b)"
                 name
-                (extra_deps |> List.map (fun x -> x |> Package.opam |> OpamPackage.to_string) |> String.concat ", "))
+                (extra_deps |> List.map (fun x -> x |> Package.opam |> OpamPackage.to_string) |> String.concat ", ") link)
             end;
            let compile_dependencies_names =
              List.filter_map
@@ -103,8 +106,12 @@ let compile ~generation ~config
            in
            let deps, jobty = match List.length extra_deps, link with
              | 0, _ -> (Current.list_seq compile_dependencies), Compile.CompileAndLink
-             | _, false -> (Current.list_seq compile_dependencies), Compile.CompileOnly
-             | _, true -> (Current.list_seq (compile_dependencies @ link_dependencies)), Compile.LinkOnly
+             | _, false ->
+              Logs.info (fun m -> m "Creating CompileOnly job");
+              (Current.list_seq compile_dependencies), Compile.CompileOnly
+             | _, true ->
+              Logs.info (fun m -> m "Creating LinkOnly job");
+              (Current.list_seq (compile_dependencies @ link_dependencies)), Compile.LinkOnly
            in
            let node =
              Compile.v ~generation ~config ~name ~blessing
@@ -122,10 +129,20 @@ let compile ~generation ~config
                    ("do-compile", Item node);
                  ])
            in
-           (node, monitor)
+           (jobty, (node, monitor))
       in
-      compilation_jobs := Package.Map.add package job !compilation_jobs;
-      job
+      match job with
+      | None -> None
+      | Some (CompileAndLink, job) ->
+        compilation_jobs := Package.Map.add package (Some job) !compilation_jobs;
+        link_jobs := Package.Map.add package (Some job) !link_jobs;
+        Some job
+      | Some (CompileOnly, job) ->
+        compilation_jobs := Package.Map.add package (Some job) !compilation_jobs;
+        Some job
+      | Some (LinkOnly, job) ->
+        link_jobs := Package.Map.add package (Some job) !link_jobs;
+        Some job
   in
   let get_compilation_node package _ =
     get_compilation_job true package

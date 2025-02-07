@@ -14,50 +14,53 @@ let env (vars : Worker.Vars.t) =
 let get_names = OpamFormula.fold_left (fun a (name, _) -> name :: a) []
 
 let universes ~packages (resolutions : OpamPackage.t list) =
-  let memo = Hashtbl.create (List.length resolutions) in
 
-  let rec aux root =
-    match Hashtbl.find_opt memo root with
-    | Some universe -> universe
-    | None ->
-        let name, version = (OpamPackage.name root, OpamPackage.version root) in
-        let opamfile : OpamFile.OPAM.t =
-          packages
-          |> OpamPackage.Name.Map.find name
-          |> OpamPackage.Version.Map.find version
-        in
-        let deps =
-          opamfile
-          |> OpamFile.OPAM.depends
-          |> OpamFilter.partial_filter_formula
-               (OpamFilter.deps_var_env ~build:true ~post:false ~test:false
-                  ~doc:false ~dev_setup:false ~dev:false)
-          |> get_names
-          |> OpamPackage.Name.Set.of_list
-        in
-        let depopts =
-          opamfile
-          |> OpamFile.OPAM.depopts
-          |> OpamFilter.partial_filter_formula
-               (OpamFilter.deps_var_env ~build:true ~post:false ~test:false
-                  ~doc:true ~dev_setup:false ~dev:false)
-          |> get_names
-          |> OpamPackage.Name.Set.of_list
-        in
-        let deps =
-          resolutions
-          |> List.filter (fun res ->
-                 let name = OpamPackage.name res in
-                 OpamPackage.Name.Set.mem name deps
-                 || OpamPackage.Name.Set.mem name depopts)
-          |> List.rev_map (fun pkg -> OpamPackage.Set.add pkg (aux pkg))
-        in
-        let result =
-          List.fold_left OpamPackage.Set.union OpamPackage.Set.empty deps
-        in
-        Hashtbl.add memo root result;
-        result
+  let aux root =
+      let name, version = (OpamPackage.name root, OpamPackage.version root) in
+      let opamfile : OpamFile.OPAM.t =
+        packages
+        |> OpamPackage.Name.Map.find name
+        |> OpamPackage.Version.Map.find version
+      in
+      let deps =
+        opamfile
+        |> OpamFile.OPAM.depends
+        |> OpamFilter.partial_filter_formula
+              (OpamFilter.deps_var_env ~build:true ~post:false ~test:false
+                ~doc:false ~dev_setup:false ~dev:false)
+        |> get_names
+        |> OpamPackage.Name.Set.of_list
+      in
+      let depopts =
+        opamfile
+        |> OpamFile.OPAM.depopts
+        |> OpamFilter.partial_filter_formula
+              (OpamFilter.deps_var_env ~build:true ~post:false ~test:false
+                ~doc:true ~dev_setup:false ~dev:false)
+        |> get_names
+        |> OpamPackage.Name.Set.of_list
+      in
+      let all_deps = OpamPackage.Name.Set.union deps depopts in
+      let deps =
+        resolutions
+        |> List.filter (fun res ->
+                let name = OpamPackage.name res in
+                OpamPackage.Name.Set.mem name all_deps)
+      in
+      let result =
+        OpamPackage.Set.of_list deps
+      in
+      result
   in
+  let simple_deps = List.fold_left (fun acc pkg -> OpamPackage.Map.add pkg (aux pkg) acc) OpamPackage.Map.empty resolutions in
+    
+  let rec closure pkgs =
+    let deps = List.map (fun pkg -> OpamPackage.Map.find pkg simple_deps) (OpamPackage.Set.to_list pkgs) in
+    let all = List.fold_left OpamPackage.Set.union OpamPackage.Set.empty deps in
+    let new_deps = OpamPackage.Set.diff all pkgs in
+    if OpamPackage.Set.is_empty new_deps then pkgs else closure (OpamPackage.Set.union pkgs all)
+  in
+  
   List.rev_map
     (fun pkg ->
       let name, version = (OpamPackage.name pkg, OpamPackage.version pkg) in
@@ -67,8 +70,8 @@ let universes ~packages (resolutions : OpamPackage.t list) =
         |> OpamPackage.Version.Map.find version
       in
       let str = OpamFile.OPAM.write_to_string opamfile in
-      (pkg, str, aux pkg |> OpamPackage.Set.elements))
-    resolutions
+      (pkg, str, closure (OpamPackage.Map.find pkg simple_deps) |> OpamPackage.Set.elements))
+      resolutions
 
 type solve_result = Worker.solve_result =
   { compile_universes : (string * string * string list) list;
