@@ -263,14 +263,17 @@ let lookup_failed_pending t =
 
 let lookup_failed_compiles t =
   let open Tyxml_html in
-  let n = ref 0 in
+  let error_msg = ref 0 in
+  let error_active = ref 0 in
+  let error_blocked = ref 0 in
+  let ok = ref 0 in
   let x = Package.Map.fold (fun _pkg current acc ->
     let status : step_status =
       match Current.observe current with
-      | Error (`Msg msg) -> incr n; Err msg
-      | Error (`Active _) -> Active
-      | Error `Blocked -> Blocked
-      | Ok _ -> OK
+      | Error (`Msg msg) -> incr error_msg; Err msg
+      | Error (`Active _) -> incr error_active; Active
+      | Error `Blocked -> incr error_blocked; Err "blocked"
+      | Ok _ -> incr ok; OK
     in
     let container =
       try
@@ -289,7 +292,7 @@ let lookup_failed_compiles t =
     | Err msg -> (container (Printf.sprintf "error: %s" msg)) :: acc
     | _ -> acc)
     t.html [] in
-  (x, !n)
+  (x, !error_active, !error_blocked, !error_msg, !ok)
      
 let lookup_solve_failures t =
   OpamPackage.Map.keys t.solve_failures |> List.map (fun k -> (k, Failed))
@@ -370,10 +373,10 @@ let render_passing_packages t =
 let render_package_root t =
   let max_version = map_max_versions t in
   let failed, pending = lookup_failed_pending t in
-  let (failed_do, n) = lookup_failed_compiles t in
+  let (failed_do, n1, n2, n3, n4) = lookup_failed_compiles t in
   let open Tyxml_html in
   [
-    h1 [ txt (Printf.sprintf "Failed 'do' jobs (out of %d checked)" n)];
+    h1 [ txt (Printf.sprintf "Failed 'do' jobs (%d, %d, %d, %d)" n1 n2 n3 n4)];
     ul (List.map (fun x ->
       li [x]) failed_do);
     h1 [ txt "Failed packages" ];
