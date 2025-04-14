@@ -424,11 +424,12 @@ let v ~config ~opam ~monitor ~migrations () =
   Log.info (fun f -> f "6) Blessed universes");
 
   (* 7) Odoc compile and html-generate artifacts *)
-  let html, html_input_node, package_pipeline_tree =
+  let html, html_input_node, package_pipeline_tree, html2 =
     let compile_monitor =
       compile ~generation ~config ~blessed
        prepped'
     in
+    let html2 = List.map (fun (pkg, (compile, _)) -> (pkg, compile)) compile_monitor in
     Log.info (fun f ->
         f ".. %d compilation nodes" (List.length compile_monitor));
     let c, compile_node =
@@ -441,7 +442,8 @@ let v ~config ~opam ~monitor ~migrations () =
       compile_monitor
       |> List.map (fun (a, (_, b)) -> (a, b))
       |> List.to_seq
-      |> Package.Map.of_seq )
+      |> Package.Map.of_seq,
+      html2 |> Package.Map.of_list)
   in
   Log.info (fun f -> f "7) Odoc compile nodes");
 
@@ -455,7 +457,7 @@ let v ~config ~opam ~monitor ~migrations () =
         f "7.b) Inform the monitor: successes %i, failures %i" successes
           (List.length solver_failures));
     Monitor.register monitor solver_failures prep_pipeline_tree blessed
-      package_pipeline_tree html
+      package_pipeline_tree html2
   in
   Log.info (fun f -> f "7.b) Inform monitor");
 
