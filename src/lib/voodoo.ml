@@ -4,10 +4,7 @@ let download_cache =
   Obuilder_spec.Cache.v "opam-archives"
     ~target:"/home/opam/.opam/download-cache"
 
-let dune_cache =
-  Obuilder_spec.Cache.v "opam-dune-cache" ~target:"/home/opam/.cache/dune"
-
-let cache = [ download_cache; dune_cache ]
+let cache = [ download_cache ]
 
 module Prep = struct
   let spec ~base =
