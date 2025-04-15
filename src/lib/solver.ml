@@ -92,7 +92,7 @@ let perform_solve ~solver ~pool ~job ~(platform : Platform.t) ~opam track =
   in
   let latest = Ocaml_version.Releases.latest |> Ocaml_version.to_string in
   perform_constrained_solve ~solver ~pool ~job ~platform ~opam
-    (("ocaml", `Leq, latest)
+    (("ocaml-base-compiler", `Leq, latest)
     :: constraints)
 
 let solver_version = "v2"
