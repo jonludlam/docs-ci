@@ -1,6 +1,6 @@
 let prep_version = "v3"
 let network = Misc.network
-let cache = Voodoo.cache
+let cache = []
 
 module OpamPackage = struct
   include OpamPackage
@@ -251,19 +251,8 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
      ### output ###
      # Error: link: /home/opam/.cache/dune/db/v2/temp/promoting: Invalid cross-device link
   *)
-  let dune_cache_enabled =
-    all_deps
-    |> List.exists (fun p ->
-           let opam = Package.opam p in
-           let min_dune_version = OpamPackage.Version.of_string "2.1.0" in
-           match OpamPackage.name_to_string opam with
-           | "dune" ->
-               OpamPackage.Version.compare (OpamPackage.version opam)
-                 min_dune_version
-               >= 0
-           | _ -> false)
-  in
 
+  
   let prep_storage_folder = (Storage.Prep0, prep) in
   let prep_folder = Storage.folder Prep0 prep in
 
@@ -376,9 +365,7 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
            [ "/home/opam/opamh" ]
            ~dst:"/home/opam/";
          (* Enable build cache conditionally on dune version *)
-         env "DUNE_CACHE" (if dune_cache_enabled then "enabled" else "disabled");
-         env "DUNE_CACHE_TRANSPORT" "direct";
-         env "DUNE_CACHE_DUPLICATION" "copy";
+         env "DUNE_CACHE" "disabled";
          run "mkdir /home/opam/docs";
          (* Pre-install some of the most popular packages *)
          run ~network:Misc.network "sudo apt-get update && sudo apt-get install -qq -yy pkg-config libgmp-dev libev-dev libssl-dev zlib1g-dev libpcre3-dev libffi-dev m4 xdot autoconf libsqlite3-dev cmake libcurl4-gnutls-dev libpcre2-dev libsdl2-dev time python3 libexpat1-dev libcairo2-dev";
