@@ -196,6 +196,7 @@ let add_base ocaml_version init =
   let extra = List.assoc (Ocaml_version.major v) [
     5, [mk "base-domains" "base";
           mk "base-nnp" "base";
+          mk "base-effects" "base";
           mk "host-arch-x86_64" "1";
           mk "host-system-other" "1";
           mk "ocaml-options-vanilla" "1";
