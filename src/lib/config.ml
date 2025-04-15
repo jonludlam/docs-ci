@@ -196,13 +196,13 @@ let cmdliner =
     $ take_n_last_versions
     $ Ssh.cmdliner)
 
-(* odoc pinned *)
+(* odoc pinned to 3.0.0 release *)
 let odoc _ =
-  "https://github.com/ocaml/odoc.git#73fc38c677164a451613fd5ad6a680dadb951539"
+  "https://github.com/ocaml/odoc.git#90e679061f68c5e5ee5915e280f63d842f41f300"
 
 let sherlodoc _ = odoc ()
 
-let pool _ = "linux-x86_64"
+let pool _ = "docs-pipeline"
 let jobs t = t.jobs
 let track_packages t = t.track_packages
 let take_n_last_versions t = t.take_n_last_versions

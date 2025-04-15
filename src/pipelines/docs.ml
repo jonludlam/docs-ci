@@ -366,6 +366,7 @@ let v ~config ~opam ~monitor ~migrations () =
       "base-bigarray.base";
       "base-domains.base";
       "base-nnp.base";
+      "base-effects.base";
       "host-arch-x86_64.1";
       "host-system-other.1";
     ] in
