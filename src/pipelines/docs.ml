@@ -51,11 +51,17 @@ let rec summarise description arr = function
         items
       |> current_list_flatten
 
+
+type 'a compile_job =
+  { job: 'a Current.t;
+    monitor : Monitor.pipeline_tree;
+  }
+  
 let compile ~generation ~config
     ~(blessed : Package.Blessing.Set.t Current.t OpamPackage.Map.t)
-    (preps : ((Prep.t Current.t * _) Package.Map.t)) =
-  let compilation_jobs = ref Package.Map.empty in
-  let link_jobs = ref Package.Map.empty in
+    (preps : (Prep.t compile_job Package.Map.t)) =
+  let compilation_jobs : Compile.t compile_job option Package.Map.t ref = ref Package.Map.empty in
+  let link_jobs : Compile.t compile_job option Package.Map.t ref = ref Package.Map.empty in
 
   let rec get_compilation_job link package =
     let name = package |> Package.opam |> OpamPackage.to_string in
@@ -68,7 +74,7 @@ let compile ~generation ~config
     with Not_found ->
       let job =
         Package.Map.find_opt package preps
-        |> Option.map @@ fun (prep, _) ->
+        |> Option.map @@ fun { job=prep; _ } ->
            let dependencies =
              Package.universe package |> Package.Universe.deps
            in
@@ -81,14 +87,14 @@ let compile ~generation ~config
            let compile_dependencies_names =
              List.filter_map
                (fun p ->
-                 get_compilation_job false p |> Option.map (fun (a, _) -> (p, a)))
+                 get_compilation_job false p |> Option.map (fun { job; _ } -> (p, job)))
                dependencies
            in
            let link_dependencies_names =
             if link then
               List.filter_map
                 (fun p ->
-                  get_compilation_job false p |> Option.map (fun (a, _) -> (p, a)))
+                  get_compilation_job false p |> Option.map (fun { job; _ } -> (p, job)))
                 extra_deps
             else
               []
@@ -129,7 +135,7 @@ let compile ~generation ~config
                    ("do-compile", Item node);
                  ])
            in
-           (jobty, (node, monitor))
+           (jobty, {job=node; monitor; })
       in
       match job with
       | None -> None
@@ -152,7 +158,7 @@ let compile ~generation ~config
 
 let prep ~config 
   ~opamfiles (all:Package.Set.t) =
-  let prep_jobs = ref Package.Map.empty in
+  let prep_jobs : Prep.t compile_job Package.Map.t ref = ref Package.Map.empty in
 
   let rec get_prep_job package =
     try Package.Map.find package !prep_jobs
@@ -169,7 +175,7 @@ let prep ~config
         let prep_dependencies_names =
           List.map
             (fun p ->
-              get_prep_job p |> (fun (a, _) -> (p, a)))
+              get_prep_job p |> (fun {job; _} -> (p, job)))
             dependencies
         in
         let prep_dependencies =
@@ -194,7 +200,7 @@ let prep ~config
               ]
           )
         in
-        node, monitor
+        { job=node; monitor; }
       in
 
       prep_jobs := Package.Map.add package job !prep_jobs;
@@ -374,7 +380,7 @@ let v ~config ~opam ~monitor ~migrations () =
     Prep.OpamFilesCache.get No_context Prep.OpamFiles.Key.{ repo = repo_opam; packages }
   in
 
-  let prepped' : (Prep.t Current.t * Monitor.pipeline_tree) Package.Map.t =
+  let prepped' : Prep.t compile_job Package.Map.t =
     prep ~config
     ~opamfiles all_packages
   in
@@ -399,7 +405,7 @@ let v ~config ~opam ~monitor ~migrations () =
     in
     let by_opam_package =
       Package.Map.fold
-        (fun package (prep, _) opam_map ->
+        (fun package {job=prep; _ } opam_map ->
           let opam = Package.opam package in
           let job =
             let+ job = Current.state ~hidden:true prep in
@@ -430,25 +436,25 @@ let v ~config ~opam ~monitor ~migrations () =
       compile ~generation ~config ~blessed
        prepped'
     in
-    let html2 = List.map (fun (pkg, (compile, _)) -> (pkg, compile)) compile_monitor in
+    let html2 = List.map (fun (pkg, { job=compile; _ }) -> (pkg, compile)) compile_monitor in
     Log.info (fun f ->
         f ".. %d compilation nodes" (List.length compile_monitor));
     let c, compile_node =
       compile_monitor
-      |> List.map (fun (a, (b, _)) -> (a, b))
+      |> List.map (fun (a, {job=b; _}) -> (a, b))
       |> compile_hierarchical_collapse ~input:solver_result_c
     in
     ( c |> List.to_seq |> Package.Map.of_seq,
       compile_node,
       compile_monitor
-      |> List.map (fun (a, (_, b)) -> (a, b))
+      |> List.map (fun (a, { monitor=b; _}) -> (a, b))
       |> List.to_seq
       |> Package.Map.of_seq,
       html2 |> Package.Map.of_list)
   in
   Log.info (fun f -> f "7) Odoc compile nodes");
 
-  let prep_pipeline_tree = Package.Map.map snd prepped' in
+  let prep_pipeline_tree = Package.Map.map (fun (p : Prep.t compile_job) -> p.monitor) prepped' in
 
   (* 7.b) Inform the monitor *)
   let () =
