@@ -86,13 +86,16 @@ let render_level =
 
 let render_list ~bullet ~level ~items ~render =
   let open Tyxml_html in
-  ul
-    (List.map
+  Some (ul
+    (List.filter_map
        (fun (name, item) ->
-         li
-           ~a:[ a_style ("list-style-type: " ^ bullet) ]
-           [ (render_level level) [ txt name ]; render ~level:(level + 1) item ])
-       items)
+         match render ~level:(level + 1) item with
+         | None -> None
+         | Some elt ->
+           Some (li
+             ~a:[ a_style ("list-style-type: " ^ bullet) ]
+             [ (render_level level) [ txt name ]; elt ]))
+       items))
 
 let rec render ~level =
   let open Tyxml_html in
@@ -107,10 +110,10 @@ let rec render ~level =
           |> Option.join
           |> function
           | Some { job_id = Some job_id; _ } ->
-              fun v -> a ~a:[ a_href ("/job/" ^ job_id) ] [ txt v ]
-          | _ -> txt
+              fun v -> Some (a ~a:[ a_href ("/job/" ^ job_id) ] [ txt v ])
+          | _ -> fun x -> Some (txt x)
         with (* if current is not a primitive term *)
-        | Failure _ -> txt
+        | Failure _ -> (fun x -> Some (txt x))
       in
       match result with
       | Error (`Msg msg) -> container ("error: " ^ msg)
@@ -191,13 +194,13 @@ let render_package_state t opam_package =
       let open Tyxml_html in
       Ok
         ([
-          h1 [ txt ("Package " ^ name) ];
-          render ~level:1 (simplify blessed_pipeline);
-          h2 [ txt ("All universes")];
+          h1 [ txt ("Package " ^ name) ]] @
+          (render ~level:1 (simplify blessed_pipeline) |> Option.to_list)
+          @ [h2 [ txt ("All universes")]]
 
-        ] @ List.flatten (List.map (fun (pkg, pipeline) ->
-          [ h3 [ txt (Package.universe pkg |> Package.Universe.hash) ];
-            render ~level:2 (simplify pipeline) ]) (Package.Map.bindings all)))
+          @ List.flatten (List.map (fun (pkg, pipeline) ->
+          ([ h3 [ txt (Package.universe pkg |> Package.Universe.hash) ] ]
+          @ (render ~level:2 (simplify pipeline) |> Option.to_list))) (Package.Map.bindings all)))
 
 let handle t ~engine:_ str =
   object
