@@ -1,7 +1,9 @@
-FROM ocaml/opam:debian-12-ocaml-4.14@sha256:14f4cc396d19e5eba0c4cd8258eedd1045091f887920ba53431e1e05110311fc AS build
+FROM ocaml/opam:debian-12-ocaml-5.3@sha256:e86a49c28b4aba9fdac4929c6ab8302b80106e5824615d5d7d2601dc4ff983d5 AS build
 RUN sudo ln -f /usr/bin/opam-2.1 /usr/bin/opam && opam init --reinit -ni
 RUN sudo apt-get update && sudo apt-get install -y capnproto graphviz libcapnp-dev libev-dev libffi-dev libgmp-dev libsqlite3-dev pkg-config
-RUN cd ~/opam-repository && git fetch -q origin master && git reset --hard 56e31a3bc1fd0bfd87e5251972e806b8f78082a5 && opam update
+RUN cd ~/opam-repository && git fetch -q origin master && git reset --hard 8a323b26edb8cbbd3a90199f7ef3d8feb0b01d58 && opam update
+
+RUN opam pin add -n git+https://github.com/jonludlam/ocurrent.git#close-after-exec
 
 WORKDIR /src
 # See https://github.com/ocurrent/ocaml-docs-ci/pull/177#issuecomment-2445338172
