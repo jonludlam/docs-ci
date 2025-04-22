@@ -1,5 +1,12 @@
 open Cmdliner
 
+let random =
+(*  In_channel.with_open_bin "/dev/urandom" (fun
+      ch ->
+        let str = String.init 4 (fun _ -> In_channel.input_byte ch |> Option.get |> Char.chr) in
+        let str = Base64.encode_exn str in
+        str)*) "NOTRANDOM"
+
 module Ssh = struct
   type t = {
     host : string;
@@ -99,6 +106,7 @@ module Ssh = struct
           GlobalKnownHostsFile=/dev/null
           UserKnownHostsFile=/dev/null
           ConnectTimeout=10
+          ConnectionAttempts=100
         |}
       t.host t.port t.user
 
@@ -136,6 +144,7 @@ type t = {
   ocluster_connection_prep : Current_ocluster.Connection.t;
   ocluster_connection_do : Current_ocluster.Connection.t;
   ocluster_connection_gen : Current_ocluster.Connection.t;
+  cache_threshold : int;
   ssh : Ssh.t;
 }
 
@@ -162,8 +171,13 @@ let take_n_last_versions =
   @@ Arg.opt Arg.(some int) None
   @@ Arg.info ~doc:"Limit the number of versions" ~docv:"LIMIT" [ "limit" ]
 
+let cache_threshold =
+  Arg.value
+  @@ Arg.opt Arg.(int) (10)
+  @@ Arg.info ~doc:"Cache threshold" ~docv:"THRESHOLD" [ "cache-threshold" ]
+
 let v cap_file jobs track_packages
-    take_n_last_versions ssh =
+    take_n_last_versions ssh cache_threshold =
   let vat = Capnp_rpc_unix.client_only_vat () in
   let cap = Capnp_rpc_unix.Cap_file.load vat cap_file |> Result.get_ok in
 
@@ -185,6 +199,7 @@ let v cap_file jobs track_packages
     ocluster_connection_do;
     ocluster_connection_gen;
     ssh;
+    cache_threshold;
   }
 
 let cmdliner =
@@ -194,7 +209,8 @@ let cmdliner =
     $ jobs
     $ track_packages
     $ take_n_last_versions
-    $ Ssh.cmdliner)
+    $ Ssh.cmdliner
+    $ cache_threshold)
 
 (* odoc pinned to 3.0.0 release *)
 let odoc _ =
@@ -210,3 +226,4 @@ let ocluster_connection_do t = t.ocluster_connection_do
 let ocluster_connection_prep t = t.ocluster_connection_prep
 let ocluster_connection_gen t = t.ocluster_connection_gen
 let ssh t = t.ssh
+let cache_threshold t = t.cache_threshold

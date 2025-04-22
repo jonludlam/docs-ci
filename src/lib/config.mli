@@ -1,3 +1,5 @@
+val random : string
+
 module Ssh : sig
   type t
 
@@ -44,3 +46,6 @@ val track_packages : t -> string list
 
 val take_n_last_versions : t -> int option
 (** Number of versions to take (None for all) *)
+
+val cache_threshold : t -> int
+(** Number of versions to keep in the cache *)
