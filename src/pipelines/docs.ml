@@ -258,7 +258,7 @@ let v ~config ~opam ~monitor ~migrations () =
   in
   let generation =
     let+ voodoo in
-    Epoch.v voodoo
+    Epoch.v config voodoo
   in
   (* 0) Housekeeping - run migrations *)
   let* _ = migrations in

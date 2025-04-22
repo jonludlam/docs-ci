@@ -1,6 +1,6 @@
 type t
 
-val v : Voodoo.t -> t
+val v : Config.t -> Voodoo.t -> t
 
 type stage = [ `Linked | `Html ]
 
