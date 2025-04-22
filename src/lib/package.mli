@@ -52,6 +52,9 @@ val ocaml_version : t -> Ocaml_version.t
 module Map : Map.S with type key = t
 module Set : Set.S with type elt = t
 
+val add_important_packages : Set.t -> unit
+val should_cache : t -> bool
+
 module Blessing : sig
   type t = Blessed | Universe
 
