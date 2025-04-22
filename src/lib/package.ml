@@ -238,3 +238,10 @@ end
 
 module Map = PackageMap
 module Set = PackageSet
+
+let important_packages : Set.t ref = ref Set.empty
+let add_important_packages packages =
+  important_packages := Set.union !important_packages packages
+let should_cache package =
+  Set.mem package !important_packages
+

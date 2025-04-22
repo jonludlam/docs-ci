@@ -40,7 +40,7 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~config ~
   let common =
     (List.map (fun { blessing; package; _ } ->
       let dir = Storage.folder (Compile (generation, blessing)) package in
-      Fmt.str "~/docs/docs-ci-scripts/download_compiled.sh %s %s %s %s" (Config.Ssh.host ssh) (Config.Ssh.storage_folder ssh) (Fpath.to_string dir) (Package.digest package ^ "-" ^  Epoch.digest generation)
+      Fmt.str "~/docs/docs-ci-scripts/download_compiled.sh %s %s %s %s %b" (Config.Ssh.host ssh) (Config.Ssh.storage_folder ssh) (Fpath.to_string dir) (Package.digest package ^ "-" ^  Epoch.digest generation) (Package.should_cache package)
       ) deps) @ 
        [Fmt.str "~/docs/docs-ci-scripts/get_prep_for_compile.sh %s %s %s %s" (Config.Ssh.host ssh) (Config.Ssh.storage_folder ssh) (Fpath.to_string prep0_folder) (Fpath.to_string prep_folder);
         "export OCAMLRUNPAM=b";
@@ -108,7 +108,7 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~config ~
            ~dst:"/home/opam/";
          run "mv ~/sherlodoc $(opam config var bin)/sherlodoc";
          run ~network:Misc.network "sudo apt install -y jq";
-         run ~network:Misc.network "git clone https://github.com/jonludlam/docs-ci-scripts.git && echo HI18";
+         run ~network:Misc.network "git clone https://github.com/jonludlam/docs-ci-scripts.git && echo %s" Config.random;
          (* obtain the compiled dependencies, prep folder and extract it *)
        ] @ [ run ~network:Misc.network ~cache:compile_caches ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list
             ((Fmt.str "ssh -MNf %s" (Config.Ssh.host ssh)) ::
