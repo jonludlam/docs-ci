@@ -52,6 +52,28 @@ let rec summarise description arr = function
       |> current_list_flatten
 
 
+let count_refs (all:Package.Set.t) =
+  let prep_jobs : int ref Package.Map.t ref = ref Package.Map.empty in
+
+  let rec get_prep_job package =
+    try
+      let ref = Package.Map.find package !prep_jobs in
+      incr ref
+    with Not_found ->
+        let dependencies =
+          Package.universe package |> Package.Universe.deps
+        in
+        let () =
+          List.iter
+            (fun p ->
+              get_prep_job p)
+            dependencies
+        in
+      prep_jobs := Package.Map.add package (ref 1) !prep_jobs
+  in
+  Package.Set.iter (fun x -> get_prep_job x) all;
+  !prep_jobs
+
 type 'a compile_job =
   { job: 'a Current.t;
     monitor : Monitor.pipeline_tree;
@@ -68,7 +90,6 @@ let compile ~generation ~config
     let extra_deps =
       Package.universe package |> Package.Universe.extra_link_deps
      in
-    Logs.info (fun m -> m "Getting compilation job for %s (link=%b)" name link);
     let job_cache = if link then link_jobs else compilation_jobs in
     try Package.Map.find package !job_cache
     with Not_found ->
@@ -367,6 +388,8 @@ let v ~config ~opam ~monitor ~migrations () =
     let> repo_opam in
     let packages = Package.Set.to_list all_packages |> List.map Package.opam |> OpamPackage.Set.of_list in
     let extra = [
+      "conf-graphviz.0.1";
+      "conf-which.1";
       "base-threads.base";
       "ocaml-options-vanilla.1";
       "base-bigarray.base";
@@ -379,6 +402,48 @@ let v ~config ~opam ~monitor ~migrations () =
     let packages = OpamPackage.Set.union (List.map OpamPackage.of_string extra |> OpamPackage.Set.of_list) packages |> OpamPackage.Set.to_list in
     Prep.OpamFilesCache.get No_context Prep.OpamFiles.Key.{ repo = repo_opam; packages }
   in
+
+  let counts = count_refs all_packages in
+
+  let counts = Package.Map.to_list counts in
+
+  let tot = List.length counts in
+  Printf.printf "Total packages: %d\n" tot;
+
+  let counts = List.sort (fun (_, x) (_, y) -> compare !x !y) counts in
+
+  let (_, hd),tl = List.hd counts, List.tl counts in
+  let (last_count, last_val, count) = List.fold_left (fun (cur_count,cur_val,all) (_, count) ->
+    if cur_val = !count
+    then (cur_count + 1, cur_val, all)
+    else (1, !count, (cur_val, cur_count) :: all)) (1, !hd, []) tl in
+
+  let all_counts = (last_val, last_count) :: count in
+  List.iter (fun (v, count) ->
+    Printf.printf "%d %d\n%!" v count) all_counts;
+
+  let cache_packages = List.fold_left (fun acc (v, count) -> 
+    if !count > Config.cache_threshold config
+    then Package.Set.add v acc
+    else acc) Package.Set.empty counts
+  in
+
+  Package.add_important_packages cache_packages;
+
+  Log.info (fun f ->
+    f "4) Cache packages (%d)" (Package.Set.cardinal cache_packages));
+
+  (* let cumulative =
+    let x = ref 0 in
+    List.map (fun (v, count) ->
+      let y = !x + count in
+      x := y;
+      (v, y)) all_counts in
+
+  List.iter (fun (v, count) ->
+    Printf.printf "%d %d\n%!" v count) cumulative;
+    
+  ignore @@ exit 0; *)
 
   let prepped' : Prep.t compile_job Package.Map.t =
     prep ~config
