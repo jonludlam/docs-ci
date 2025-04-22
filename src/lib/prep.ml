@@ -187,6 +187,8 @@ let add_base ocaml_version init =
   in
   let v = ocaml_version in
   let std = List.fold_right add_one [
+    mk "conf-graphviz" "0.1";
+    mk "conf-which" "1";
     mk "base-unix" "base";
     mk "base-bigarray" "base";
     mk "base-threads" "base";
@@ -235,7 +237,7 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
   let cache = cache @ prep_caches in
 
   let packages_topo_list =
-    all_deps
+  all_deps
     |> Package.topo_sort
     |> List.filter (fun x -> Package.opam x |> not_base)
   in
@@ -288,10 +290,11 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
     List.flatten @@ List.map (fun pkg ->
     match OpamPackage.Map.find (Package.opam pkg) opamfiles with
     | Ok (_has_depext, _opamfiles) ->
-      [ Fmt.str "time ~/docs/docs-ci-scripts/download_prep.sh %s %s %s"
+      [ Fmt.str "time ~/docs/docs-ci-scripts/download_prep.sh %s %s %s %s"
           (Config.Ssh.host ssh)
           (Config.Ssh.storage_folder ssh)
           (Fpath.to_string (Storage.folder Storage.Prep0 pkg))
+          (if Package.should_cache pkg then "true" else "false")
       ]
     | Error _ | exception _ ->
       [ Fmt.str "echo Failed to find opamfiles for %s"
@@ -335,7 +338,7 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
       "rm -rf $(opam var prefix)";
     ] in
 
-  let persistent_ssh = [ Fmt.str "ssh -MNf %s" (Config.Ssh.host ssh) ] in
+  let persistent_ssh = [ Fmt.str "/usr/bin/time -f \"SSH time %%E\" ssh -MNf %s" (Config.Ssh.host ssh) ] in
 
   let copy_results =
     (create_dir_and_copy_logs_if_not_exist) 
@@ -370,7 +373,7 @@ let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
          (* Pre-install some of the most popular packages *)
          run ~network:Misc.network "sudo apt-get update && sudo apt-get install -qq -yy pkg-config libgmp-dev libev-dev libssl-dev zlib1g-dev libpcre3-dev libffi-dev m4 xdot autoconf libsqlite3-dev cmake libcurl4-gnutls-dev libpcre2-dev libsdl2-dev time python3 libexpat1-dev libcairo2-dev";
 
-         run ~network:Misc.network "git clone https://github.com/jonludlam/docs-ci-scripts.git /home/opam/docs/docs-ci-scripts && echo HI16";
+         run ~network:Misc.network "git clone https://github.com/jonludlam/docs-ci-scripts.git /home/opam/docs/docs-ci-scripts && echo %s" Config.random;
 
          (* run ~network ~cache ~secrets:Config.Ssh.secrets "%s" @@ Misc.Cmd.list install_packages *)
        ] @ install_cmds @ [
