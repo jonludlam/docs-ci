@@ -275,7 +275,7 @@ let lookup_failed_compiles t =
       match Current.observe current with
       | Error (`Msg msg) -> incr error_msg; Err msg
       | Error (`Active _) -> incr error_active; Active
-      | Error `Blocked -> incr error_blocked; Err "blocked"
+      | Error `Blocked -> incr error_blocked; Blocked
       | Ok _ -> incr ok; OK
     in
     let container =
