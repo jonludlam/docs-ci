@@ -18,6 +18,9 @@ type t
 val cmdliner : t Cmdliner.Term.t
 val ssh : t -> Ssh.t
 
+val odoc : t -> string
+(** Odoc version pin to use. *)
+
 val pool : t -> string
 (** The ocluster pool to use *)
 
