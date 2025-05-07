@@ -408,6 +408,7 @@ let v ~config ~opam ~monitor ~migrations () =
         "base-effects.base";
         "host-arch-x86_64.1";
         "host-system-other.1";
+        "opam-depext.1.2.3";
       ]
     in
     let packages =

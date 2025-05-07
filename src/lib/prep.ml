@@ -213,6 +213,8 @@ let add_base ocaml_version init =
         mk "base-unix" "base";
         mk "base-bigarray" "base";
         mk "base-threads" "base";
+        mk "opam-depext" "1.2.3";
+
         mk "ocaml-base-compiler" (Ocaml_version.to_string ocaml_version);
         mk "ocaml" (Ocaml_version.to_string ocaml_version);
       ]
