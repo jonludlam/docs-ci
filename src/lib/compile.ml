@@ -84,8 +84,6 @@ let spec_success ~ssh ~base ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~config
       Fmt.str "mkdir -p %a" Fpath.pp linked_folder;
       Misc.tar_cmd linked_folder;
       Fmt.str "echo raw_folder: %s" (Fpath.to_string raw_folder);
-      Fmt.str "~/docs/docs-ci-scripts/gen_status_json.sh %s"
-        (Fpath.to_string raw_folder);
       Fmt.str "time rsync -aR ./%s %s:%s/."
         Fpath.(to_string (parent linked_folder))
         (Config.Ssh.host ssh)
