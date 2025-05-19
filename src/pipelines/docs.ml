@@ -192,7 +192,7 @@ let prep ~config ~opamfiles (all : Package.Set.t) =
         in
         let prep_dependencies = prep_dependencies_names |> List.map snd in
         let base_image = Misc.get_base_image package in
-        let opamfiles =
+      let opamfiles =
           Current.map
             (fun x ->
               List.filter_map
