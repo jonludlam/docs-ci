@@ -195,6 +195,7 @@ let not_base x =
          "ocaml";
          "ocaml-base-compiler";
          "ocaml-variants";
+         "ocaml-compiler";
        ])
 
 let add_base ocaml_version init =
@@ -245,7 +246,12 @@ let add_base ocaml_version init =
     else if Ocaml_version.minor v >= 12 then [ mk "ocaml-config" "2" ]
     else [ mk "ocaml-config" "1" ]
   in
-  ocaml_config @ std @ extra
+  let ocaml_compiler =
+    if Ocaml_version.major v = 5 && Ocaml_version.minor v >= 3 then
+      [ mk "ocaml-compiler" (Ocaml_version.to_string v) ]
+    else []
+  in
+  ocaml_compiler @ ocaml_config @ std @ extra
 
 let spec ~ssh ~tools_base ~base ~opamfiles (prep : Package.t) =
   let open Obuilder_spec in
