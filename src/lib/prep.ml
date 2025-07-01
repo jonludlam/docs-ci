@@ -215,7 +215,6 @@ let add_base ocaml_version init =
         mk "base-bigarray" "base";
         mk "base-threads" "base";
         mk "opam-depext" "1.2.3";
-
         mk "ocaml-base-compiler" (Ocaml_version.to_string ocaml_version);
         mk "ocaml" (Ocaml_version.to_string ocaml_version);
       ]
@@ -487,11 +486,14 @@ module Prep = struct
       (* base is derived from 'prep' so we don't need to include it in the hash *)
       let opamfiles_hash =
         let buf = Buffer.create 1024 in
-        let () = OpamPackage.Map.iter (fun _ x ->
-          match x with
-          | Ok (_has_depext, opamfile) ->
-              Buffer.add_string buf opamfile
-          | _ -> ()) opamfiles in
+        let () =
+          OpamPackage.Map.iter
+            (fun _ x ->
+              match x with
+              | Ok (_has_depext, opamfile) -> Buffer.add_string buf opamfile
+              | _ -> ())
+            opamfiles
+        in
         Hashtbl.hash (Buffer.contents buf)
       in
       Fmt.str "%s\n%s\n%s\n%d\n" prep_version (Package.digest prep)

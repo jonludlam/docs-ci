@@ -183,7 +183,8 @@ let valid_packages_path =
   @@ Arg.opt Arg.(string) "valid_packages.txt"
   @@ Arg.info ~doc:"Valid packages path" ~docv:"PATH" [ "valid-packages" ]
 
-let v cap_file jobs track_packages take_n_last_versions ssh cache_threshold valid_packages_path =
+let v cap_file jobs track_packages take_n_last_versions ssh cache_threshold
+    valid_packages_path =
   let vat = Capnp_rpc_unix.client_only_vat () in
   let cap = Capnp_rpc_unix.Cap_file.load vat cap_file |> Result.get_ok in
 
