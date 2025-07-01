@@ -11,10 +11,13 @@ module Op = struct
 
   module Value = struct
     type t = Package.Set.t
-
     let digest v =
-      Package.Set.elements v |> List.map Package.to_yojson |> fun l ->
-      Yojson.Safe.to_string (`List l) |> Digest.string
+      let b = Buffer.create 1000000 in
+      Package.Set.elements v |> List.iter (fun p ->
+        Buffer.add_string b (Package.universe p |> Package.Universe.hash);
+        Buffer.add_string b (Package.opam p |> OpamPackage.name_to_string);
+        Buffer.add_string b (Package.opam p |> OpamPackage.version_to_string));
+      Digest.string (Buffer.contents b)
   end
 
   module Outcome = Current.Unit
