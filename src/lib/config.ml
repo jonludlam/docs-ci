@@ -146,6 +146,7 @@ type t = {
   ocluster_connection_do : Current_ocluster.Connection.t;
   ocluster_connection_gen : Current_ocluster.Connection.t;
   cache_threshold : int;
+  valid_packages_path : string;
   ssh : Ssh.t;
 }
 
@@ -177,7 +178,12 @@ let cache_threshold =
   @@ Arg.opt Arg.(int) 10
   @@ Arg.info ~doc:"Cache threshold" ~docv:"THRESHOLD" [ "cache-threshold" ]
 
-let v cap_file jobs track_packages take_n_last_versions ssh cache_threshold =
+let valid_packages_path =
+  Arg.value
+  @@ Arg.opt Arg.(string) "valid_packages.txt"
+  @@ Arg.info ~doc:"Valid packages path" ~docv:"PATH" [ "valid-packages" ]
+
+let v cap_file jobs track_packages take_n_last_versions ssh cache_threshold valid_packages_path =
   let vat = Capnp_rpc_unix.client_only_vat () in
   let cap = Capnp_rpc_unix.Cap_file.load vat cap_file |> Result.get_ok in
 
@@ -198,6 +204,7 @@ let v cap_file jobs track_packages take_n_last_versions ssh cache_threshold =
     ocluster_connection_prep;
     ocluster_connection_do;
     ocluster_connection_gen;
+    valid_packages_path;
     ssh;
     cache_threshold;
   }
@@ -210,7 +217,8 @@ let cmdliner =
     $ track_packages
     $ take_n_last_versions
     $ Ssh.cmdliner
-    $ cache_threshold)
+    $ cache_threshold
+    $ valid_packages_path)
 
 (* odoc pinned to 3.0.0 release *)
 let odoc _ =
@@ -226,3 +234,4 @@ let ocluster_connection_prep t = t.ocluster_connection_prep
 let ocluster_connection_gen t = t.ocluster_connection_gen
 let ssh t = t.ssh
 let cache_threshold t = t.cache_threshold
+let valid_packages_path t = t.valid_packages_path

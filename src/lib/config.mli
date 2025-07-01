@@ -50,3 +50,6 @@ val take_n_last_versions : t -> int option
 
 val cache_threshold : t -> int
 (** Number of versions to keep in the cache *)
+
+val valid_packages_path : t -> string
+(** Path to the file containing the valid packages. *)
