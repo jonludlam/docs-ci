@@ -192,7 +192,7 @@ let prep ~config ~opamfiles (all : Package.Set.t) =
         in
         let prep_dependencies = prep_dependencies_names |> List.map snd in
         let base_image = Misc.get_base_image package in
-      let opamfiles =
+        let opamfiles =
           Current.map
             (fun x ->
               List.filter_map
@@ -378,13 +378,16 @@ let v ~config ~opam ~monitor ~migrations () =
       f "3) All packages (%d)" (Package.Set.cardinal all_packages));
 
   Log.info (fun f ->
-      f "Writing valid packages to %s"
-        (Config.valid_packages_path config));
-  
-  let valid_packages = Valid_packages.set_current config solver_result_c (Fpath.v (Config.valid_packages_path config)) all_packages in
+      f "Writing valid packages to %s" (Config.valid_packages_path config));
+
+  let valid_packages =
+    Valid_packages.set_current config solver_result_c
+      (Fpath.v (Config.valid_packages_path config))
+      all_packages
+  in
 
   (* 4) Prepare the packages for compilation *)
-  
+
   (* 4) Schedule a somewhat small set of jobs to obtain at least one universe for each package.version *)
   (* 4a) Decide on a docker tag for each job *)
   (* 5) Run the preparation step *)
@@ -579,7 +582,13 @@ let v ~config ~opam ~monitor ~migrations () =
     in
     let live_html = Live.set_to ~ssh "html" generation in
     let live_linked = Live.set_to ~ssh "linked" generation in
-    Current.all [ commits_raw |> Current.ignore_value; live_html; live_linked; valid_packages ]
+    Current.all
+      [
+        commits_raw |> Current.ignore_value;
+        live_html;
+        live_linked;
+        valid_packages;
+      ]
   in
   Log.info (fun f -> f "8) Pipeline ready");
   live_branch
