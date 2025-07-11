@@ -223,7 +223,7 @@ let cmdliner =
 
 (* odoc pinned to 3.1.0 release *)
 let odoc _ =
-  "https://github.com/ocaml/odoc.git#d15dd0ef8e31b3e8861cb7f6835fcb030cd4f43a"
+  "https://github.com/ocaml/odoc.git#1e7ee409b7f16f2458593c63d48c19e3505eec4a"
 
 let sherlodoc _ = odoc ()
 let pool _ = "docs-pipeline"
