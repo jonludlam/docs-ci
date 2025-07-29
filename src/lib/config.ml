@@ -221,9 +221,9 @@ let cmdliner =
     $ cache_threshold
     $ valid_packages_path)
 
-(* odoc pinned to 3.1.0 release *)
+(* odoc really pinned to 3.1.0 release now *)
 let odoc _ =
-  "https://github.com/ocaml/odoc.git#1e7ee409b7f16f2458593c63d48c19e3505eec4a"
+  "https://github.com/ocaml/odoc.git#dbe1333c687102e1a9a1cbe59d63b8f69e6b1af0"
 
 let sherlodoc _ = odoc ()
 let pool _ = "docs-pipeline"
