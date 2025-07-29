@@ -43,6 +43,7 @@ module Op = struct
             packages)
     in
     let () = Unix.rename (Printf.sprintf "%s.tmp" path) path in
+    let path = Fpath.(v (Config.Ssh.storage_folder ssh) / path |> to_string) in
     let cmd =
       Bos.Cmd.(
         v "scp"
