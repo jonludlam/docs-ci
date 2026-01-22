@@ -11,6 +11,18 @@ let open_store () =
   | Error e ->
       Fmt.failwith "Failed to open opam-repository: %a" Store.pp_error e
 
+let open_store_at path =
+  let fpath = Fpath.v path in
+  (* Check if this is a regular checkout (has .git subdir) or a bare repo *)
+  let dotgit =
+    let git_subdir = Fpath.(fpath / ".git") in
+    if Sys.file_exists (Fpath.to_string git_subdir) then git_subdir else fpath
+  in
+  Git_unix.Store.v ~dotgit fpath >|= function
+  | Ok x -> x
+  | Error e ->
+      Fmt.failwith "Failed to open opam-repository at %s: %a" path Store.pp_error e
+
 let clone () =
   match Unix.lstat clone_path with
   | Unix.{ st_kind = S_DIR; _ } -> Lwt.return_unit

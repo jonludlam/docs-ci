@@ -116,20 +116,27 @@ end = struct
     let link_deps = remove_blacklisted_packages ~blacklist link_deps in
     let memo = ref OpamPackage.Map.empty in
     let package_deps = OpamPackage.Map.of_list compile_deps in
-    let rec obtain package =
+    let rec obtain ~visiting package =
+      if OpamPackage.Set.mem package visiting then begin
+        Printf.eprintf "CYCLE DETECTED: %s\n%!" (OpamPackage.to_string package);
+        Printf.eprintf "  Visiting stack: %s\n%!"
+          (OpamPackage.Set.elements visiting |> List.map OpamPackage.to_string |> String.concat " -> ");
+        failwith (Printf.sprintf "Dependency cycle detected at %s" (OpamPackage.to_string package))
+      end;
       match OpamPackage.Map.find_opt package !memo with
       | Some package -> package
       | None ->
-          (* memo := OpamPackage.Map.add package None !memo; *)
+          let visiting = OpamPackage.Set.add package visiting in
           let deps_pkg =
             OpamPackage.Map.find_opt package package_deps
             |> Option.value ~default:[]
-            |> List.map obtain
+            |> List.map (obtain ~visiting)
           in
           let pkg = Package.v ocaml_version package deps_pkg commit in
           memo := OpamPackage.Map.add package pkg !memo;
           pkg
     in
+    let obtain package = obtain ~visiting:OpamPackage.Set.empty package in
     let results = obtain root in
     OpamPackage.Map.iter
       (fun opam_package pkg ->

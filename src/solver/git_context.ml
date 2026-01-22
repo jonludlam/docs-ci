@@ -11,6 +11,7 @@ type t = {
   constraints : OpamFormula.version_constraint OpamTypes.name_map;
   (* User-provided constraints *)
   test : OpamPackage.Name.Set.t;
+  doc : bool;
 }
 
 let user_restrictions t name = OpamPackage.Name.Map.find_opt name t.constraints
@@ -28,7 +29,9 @@ let filter_deps t pkg f =
   let test = OpamPackage.Name.Set.mem (OpamPackage.name pkg) t.test in
   f
   |> OpamFilter.partial_filter_formula (env t pkg)
-  |> OpamFilter.filter_deps ~build:true ~post:true ~test ~doc:false ~dev
+  (* Note: ~post:true is needed because ocaml-compiler uses {post} on critical
+     deps like base-unix for non-Windows. The t.doc flag controls {with-doc}. *)
+  |> OpamFilter.filter_deps ~build:true ~post:true ~test ~doc:t.doc ~dev
        ~dev_setup:false ~default:false
 
 let candidates t name =
@@ -109,11 +112,7 @@ let extend_packages packages =
             let x = OpamFormula.ands_to_list raw in
             let y = OpamFormula.ands_to_list deps in
             let deps = x @ y |> OpamFormula.ands in
-            let opam = OpamFile.OPAM.with_depends deps opam in
-            Format.eprintf "Extended dependencies for %s:\n%!"
-              (OpamFile.OPAM.bug_reports opam |> String.concat ", ");
-            Format.eprintf "%s\n%!" (OpamFile.OPAM.write_to_string opam);
-            opam
+            OpamFile.OPAM.with_depends deps opam
           with Not_found -> opam)
         versions)
     packages
@@ -161,5 +160,6 @@ let read_packages store commit =
                OpamPackage.Name.Map.empty)
 
 let create ?(test = OpamPackage.Name.Set.empty)
-    ?(pins = OpamPackage.Name.Map.empty) ~constraints ~env ~packages () =
-  { env; packages; pins; constraints; test }
+    ?(pins = OpamPackage.Name.Map.empty) ?(doc = false)
+    ~constraints ~env ~packages () =
+  { env; packages; pins; constraints; test; doc }

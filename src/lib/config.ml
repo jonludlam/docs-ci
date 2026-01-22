@@ -1,12 +1,11 @@
 open Cmdliner
 
 let random =
-  (*  In_channel.with_open_bin "/dev/urandom" (fun
-      ch ->
-        let str = String.init 4 (fun _ -> In_channel.input_byte ch |> Option.get |> Char.chr) in
-        let str = Base64.encode_exn str in
-        str)*)
-  "NOTRANDOM"
+  In_channel.with_open_bin "/dev/urandom" (fun ch ->
+      let str =
+        String.init 4 (fun _ -> In_channel.input_byte ch |> Option.get |> Char.chr)
+      in
+      Base64.encode_exn str)
 
 module Ssh = struct
   type t = {
