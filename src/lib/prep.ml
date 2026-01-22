@@ -482,7 +482,7 @@ module Prep = struct
       opamfiles : (bool * string) Current.or_error OpamPackage.Map.t;
     }
 
-    let digest { prep; base = _; tools_base = _; config = _; opamfiles } =
+    let digest { prep; base = _; tools_base; config = _; opamfiles } =
       (* base is derived from 'prep' so we don't need to include it in the hash *)
       let opamfiles_hash =
         let buf = Buffer.create 1024 in
@@ -496,8 +496,9 @@ module Prep = struct
         in
         Hashtbl.hash (Buffer.contents buf)
       in
-      Fmt.str "%s\n%s\n%s\n%d\n" prep_version (Package.digest prep)
-        (Package.digest prep) opamfiles_hash
+      let tools_digest = Spec.to_spec tools_base |> Digest.string |> Digest.to_hex in
+      Fmt.str "%s\n%s\n%s\n%s\n%d\n" prep_version (Package.digest prep)
+        (Package.digest prep) tools_digest opamfiles_hash
   end
 
   let pp f Key.{ prep; _ } = Fmt.pf f "Voodoo prep %a" Package.pp prep

@@ -18,7 +18,7 @@ module Prep = struct
                   "sudo apt-get update && sudo apt-get install -yy m4 \
                    pkg-config";
                   Fmt.str "opam pin -ny opamh %s"
-                    "https://github.com/jonludlam/opamh.git#d54dbe7991af6020c36f89c300d8109664541963 \
+                    "https://github.com/jonludlam/opamh.git#5561fdf96632e718bdecce1dcdbbc3f9f4d20090 \
                      && opam install -y opamh";
                   "cp $(opam config var bin)/opamh /home/opam";
                   "rm -rf $(opam config var prefix)";
@@ -58,12 +58,11 @@ module OdocDriver = struct
            @@ Misc.Cmd.list
                 [
                   "sudo apt-get update";
-                  Fmt.str "opam pin -ny sherlodoc.dev %s" sherlodoc_pin;
+                  Fmt.str "opam pin -ny sherlodoc.dev %s --with-version 3.1.0" sherlodoc_pin;
                   Fmt.str
-                    "opam pin -ny odoc-parser.dev %s && opam pin -ny \
-                     odoc-md.dev %s &&  opam pin -ny odoc.dev %s && opam pin \
-                     -ny odoc-driver.dev %s"
-                    odoc_pin odoc_pin odoc_pin odoc_pin;
+                    "opam pin -ny odoc-parser.dev --with-version 3.1.0 %s && opam pin -ny \
+                     odoc-md.dev %s --with-version 3.1.0 &&  opam pin -ny odoc.dev %s --with-version 3.1.0"
+                    odoc_pin odoc_pin odoc_pin;
                   "opam install -y odoc-md";
                   "opam install -y odoc-driver sherlodoc";
                   "cp $(opam config var bin)/odoc_driver_voodoo $(opam config \
