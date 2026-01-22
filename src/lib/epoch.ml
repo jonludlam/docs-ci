@@ -1,6 +1,6 @@
 type t = { config : Config.t }
 
-let version = "v2"
+let version = "v3"
 let v config = { config }
 
 let digest t =
