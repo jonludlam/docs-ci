@@ -1,7 +1,7 @@
-FROM ocaml/opam:debian-12-ocaml-5.3@sha256:e86a49c28b4aba9fdac4929c6ab8302b80106e5824615d5d7d2601dc4ff983d5 AS build
+FROM ocaml/opam:debian-12-ocaml-5.3@sha256:ccdefd5f949d6e58e6fc253e1b398eb5ba691e6e82a701741a925943463569a6 AS build
 RUN sudo ln -f /usr/bin/opam-2.1 /usr/bin/opam && opam init --reinit -ni
 RUN sudo apt-get update
-RUN cd ~/opam-repository && git fetch -q origin master && git reset --hard cf409d95af00ff822422bd76b657ed213b661401 && opam update
+RUN cd ~/opam-repository && git fetch -q origin master && git reset --hard 6bda456f941d6c1e0773fcb1fd57c0eb54b8a2c1 && opam update
 
 WORKDIR /src
 # See https://github.com/ocurrent/ocaml-docs-ci/pull/177#issuecomment-2445338172
