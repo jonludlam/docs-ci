@@ -441,24 +441,26 @@ let v ~config ~opam ~monitor ~migrations () =
 
   let counts = List.sort (fun (_, x) (_, y) -> compare !x !y) counts in
 
-  let (_, hd), tl = (List.hd counts, List.tl counts) in
-  let last_count, last_val, count =
-    List.fold_left
-      (fun (cur_count, cur_val, all) (_, count) ->
-        if cur_val = !count then (cur_count + 1, cur_val, all)
-        else (1, !count, (cur_val, cur_count) :: all))
-      (1, !hd, []) tl
-  in
-
-  let all_counts = (last_val, last_count) :: count in
-  List.iter (fun (v, count) -> Printf.printf "%d %d\n%!" v count) all_counts;
-
   let cache_packages =
-    List.fold_left
-      (fun acc (v, count) ->
-        if !count > Config.cache_threshold config then Package.Set.add v acc
-        else acc)
-      Package.Set.empty counts
+    match counts with
+    | [] ->
+        Printf.printf "No packages to compute histogram\n%!";
+        Package.Set.empty
+    | (_, hd) :: tl ->
+        let last_count, last_val, count =
+          List.fold_left
+            (fun (cur_count, cur_val, all) (_, count) ->
+              if cur_val = !count then (cur_count + 1, cur_val, all)
+              else (1, !count, (cur_val, cur_count) :: all))
+            (1, !hd, []) tl
+        in
+        let all_counts = (last_val, last_count) :: count in
+        List.iter (fun (v, count) -> Printf.printf "%d %d\n%!" v count) all_counts;
+        List.fold_left
+          (fun acc (v, count) ->
+            if !count > Config.cache_threshold config then Package.Set.add v acc
+            else acc)
+          Package.Set.empty counts
   in
 
   Package.add_important_packages cache_packages;
