@@ -636,17 +636,19 @@ let v ~config ~spec ~deps ~opamfiles ~prep =
        { prep; config; base = spec; tools_base; opamfiles }
      |> Current.Primitive.map_result
           (Result.map (fun (artifacts_branches_output, _failed) ->
-               let _artifacts_branches_output =
+               (* Compute a combined hash from all artifact hashes *)
+               let combined_hash =
                  artifacts_branches_output
-                 |> List.to_seq
-                 |> Seq.map (fun Storage.{ id; hash } -> (id, hash))
-                 |> StringMap.of_seq
+                 |> List.sort (fun a b -> String.compare a.Storage.id b.Storage.id)
+                 |> List.map (fun Storage.{ id; hash } -> id ^ ":" ^ hash)
+                 |> String.concat "\n"
+                 |> Digest.string
+                 |> Digest.to_hex
                in
-
                {
                  base = spec;
-                 prep_hash = "";
+                 prep_hash = combined_hash;
                  result = Success;
                  package = prep;
-                 hash = "";
+                 hash = combined_hash;
                }))
