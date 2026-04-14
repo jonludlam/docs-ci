@@ -95,10 +95,17 @@ let _run_capnp capnp_public_address capnp_listen_address =
 
 let main () current_config github_auth mode capnp_public_address
     capnp_listen_address config migrations : unit =
-  (* Set up Eio + Lwt bridge so day11 primitives (Eio) can be called
-     from OCurrent's Lwt pipeline. Eio_main.run provides the Eio env,
-     Lwt_eio.with_event_loop bridges the two event loops, and
-     Lwt_eio.run_lwt runs the OCurrent Lwt engine from Eio context. *)
+  (* Pre-compute git_packages BEFORE entering the Eio event loop,
+     because git-unix uses Lwt_main.run internally which can't be
+     nested inside Lwt_eio's event loop. *)
+  let opam_repo = Sys.getenv_opt "DAY11_OPAM_REPO"
+    |> Option.value ~default:(Sys.getenv "HOME" ^ "/ocaml/opam-repository") in
+  let git_packages, repos_with_shas =
+    Day11_opam.Git_packages.of_repositories [ (opam_repo, None) ] in
+  (* Eio_main.run is the top-level event loop.
+     Lwt_eio.with_event_loop sets up Lwt's backend to use Eio.
+     OCurrent (Lwt) runs via Lwt_eio.Promise.await_lwt from Eio context.
+     day11 (Eio) runs via Lwt_eio.run_eio from OCurrent's Lwt context. *)
   ignore @@ Eio_main.run @@ fun env ->
   Lwt_eio.with_event_loop ~clock:(Eio.Stdenv.clock env) @@ fun _token ->
   let eio_env = (env :> Eio_unix.Stdenv.base) in
@@ -112,10 +119,6 @@ let main () current_config github_auth mode capnp_public_address
      | Error (`Msg msg) ->
        Docs_ci_lib.Log.warn (fun f ->
            f "SSH storage init failed: %s" msg));
-  Lwt_eio.run_lwt (fun () ->
-  (* Skip Cap'n Proto setup — day11 solves locally *)
-  let capnp_vat = Capnp_rpc_unix.client_only_vat () in
-  ignore capnp_vat;
   ignore capnp_public_address;
   ignore capnp_listen_address;
   let repo_opam =
@@ -126,7 +129,7 @@ let main () current_config github_auth mode capnp_public_address
   let engine =
     Current.Engine.create ~config:current_config (fun () ->
         Docs_ci_pipelines.Docs.v ~config ~opam:repo_opam ~monitor
-          ~migrations ~eio_env ()
+          ~migrations ~eio_env ~git_packages ~repos_with_shas ()
         |> Current.ignore_value)
   in
 
@@ -145,7 +148,9 @@ let main () current_config github_auth mode capnp_public_address
     Current_web.Site.(v ?authn ~has_role ~secure_cookies)
       ~name:program_name routes
   in
-  Lwt.choose
+  (* await_lwt blocks the Eio fiber until the Lwt promise resolves,
+     while allowing other Eio fibers and Lwt threads to run *)
+  Lwt_eio.Promise.await_lwt (Lwt.choose
     [
       Current.Engine.thread engine;
       Current_web.run ~mode site;
