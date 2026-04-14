@@ -450,7 +450,7 @@ let v ~config ~opam ~monitor ~migrations ?eio_env () =
   | Some env -> v_day11 ~config ~opam ~monitor ~migrations ~eio_env:env ()
   | None ->
   let open Current.Syntax in
-  let ssh = Config.ssh config in
+  let ssh = Option.get (Config.ssh config) in
   let migrations =
     match migrations with
     | Some path -> Index.migrate path

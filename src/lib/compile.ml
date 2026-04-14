@@ -384,12 +384,12 @@ module Compile = struct
       match Prep.result prep with
       | Success ->
           Lwt.return_ok
-            (spec_success ~generation ~ssh:(Config.ssh config) ~config ~base
+            (spec_success ~generation ~ssh:(Option.get (Config.ssh config)) ~config ~base
                ~odoc_driver_base ~odoc_pin ~sherlodoc_pin ~deps ~blessing ~jobty
                prep)
       | Failed ->
           Lwt.return_ok
-            (spec_failure ~generation ~ssh:(Config.ssh config) ~config ~base
+            (spec_failure ~generation ~ssh:(Option.get (Config.ssh config)) ~config ~base
                ~blessing prep)
     in
     let action = Misc.to_ocluster_submission spec in
@@ -398,8 +398,8 @@ module Compile = struct
     let build_pool =
       Current_ocluster.Connection.pool ~job ~pool:(Config.pool config) ~action
         ~cache_hint
-        ~secrets:(Config.Ssh.secrets_values (Config.ssh config))
-        (Config.ocluster_connection_do config)
+        ~secrets:(Config.Ssh.secrets_values (Option.get (Config.ssh config)))
+        (Option.get (Config.ocluster_connection_do config))
     in
     let* build_job =
       Current.Job.start_with ~pool:build_pool ~level:Mostly_harmless job
