@@ -329,7 +329,126 @@ let compile_hierarchical_collapse ~input lst =
   |> collapse_by ~key ~input first_char (Some package_name)
   |> collapse_single ~key ~input
 
-let v ~config ~opam ~monitor ~migrations () =
+let v_day11 ~config ~opam ~monitor:_ ~migrations:_ ~eio_env () =
+  (* Day11-based pipeline — uses local layered containers instead of OCluster.
+     Reuses the existing tracking and solving stages, replaces prep and compile
+     with day11's layered container builds. *)
+  let open Current.Syntax in
+  let env = eio_env in
+  let os_dir = Fpath.v (Sys.getenv_opt "DAY11_OS_DIR"
+    |> Option.value ~default:"/var/cache/day11/debian-bookworm-x86_64") in
+  let cache_dir = Fpath.v (Sys.getenv_opt "DAY11_CACHE_DIR"
+    |> Option.value ~default:"/var/cache/day11") in
+  ignore (Bos.OS.Dir.create ~path:true os_dir);
+  ignore (Bos.OS.Dir.create ~path:true cache_dir);
+  let base = match Day11_opam_build.Base.load_cached ~cache_dir
+    ~os_distribution:"debian" ~os_version:"bookworm" with
+  | Some b -> b
+  | None ->
+    Logs.err (fun f -> f "No cached base image. Run 'day11 batch' first.");
+    failwith "No base image — run 'day11 batch' to create one"
+  in
+  let benv = Day11_opam_build.Types.make_build_env ~base ~os_dir () in
+  let build_ctx : Day11_bridge.build_env = {
+    env; benv; os_dir; cache_dir;
+  } in
+  let base_hash = Day11_opam_build.Base.build_hash
+    ~os_distribution:"debian" ~os_version:"bookworm" ~arch:"x86_64" () in
+
+  (* 1) Track packages *)
+  let tracked =
+    Track.v
+      ~limit:(Config.take_n_last_versions config)
+      ~filter:(Config.track_packages config)
+      opam
+  in
+  (* 2) Solve *)
+  let solver_result = Solver.incremental ~config ~blacklist ~opam tracked in
+  let* solver_result in
+
+  (* 3) Expand to all packages *)
+  let all_packages =
+    solver_result
+    |> Solver.keys
+    |> List.filter_map (fun x -> try Some (Solver.get x) with _ -> None)
+    |> List.rev_map Package.all_deps
+    |> List.flatten
+    |> List.filter (fun pkg ->
+           Ocaml_version.compare
+             (Package.ocaml_version pkg)
+             Ocaml_version.Releases.v4_04_2
+           >= 0)
+    |> Package.Set.of_list
+  in
+  Log.info (fun f ->
+      f "Day11: %d packages to build" (Package.Set.cardinal all_packages));
+
+  (* 4) Build all packages using day11 layers *)
+  let find_opam _pkg = None in (* TODO: wire up opam file lookup *)
+  let prepped =
+    Day11_pipeline.prep ~ctx:build_ctx ~base_hash ~find_opam all_packages
+  in
+  Log.info (fun f ->
+      f "Day11: %d build nodes" (Package.Map.cardinal prepped));
+
+  (* 5) Blessed universes *)
+  let blessed =
+    let counts =
+      let counts_mut = ref Package.Map.empty in
+      Package.Set.iter
+        (fun package ->
+          Package.all_deps package
+          |> List.iter (fun dependency ->
+                 counts_mut :=
+                   Package.Map.update dependency
+                     (function Some v -> Some (v + 1) | None -> Some 1)
+                     !counts_mut))
+        all_packages;
+      !counts_mut
+    in
+    let by_opam_package =
+      Package.Map.fold
+        (fun package { Day11_pipeline.job = prep; _ } opam_map ->
+          let opam = Package.opam package in
+          let job =
+            let+ job = Current.state ~hidden:true prep in
+            (package, job)
+          in
+          OpamPackage.Map.update opam (List.cons job) [] opam_map)
+        prepped OpamPackage.Map.empty
+    in
+    by_opam_package
+    |> OpamPackage.Map.mapi (fun opam preps ->
+           preps
+           |> Current.list_seq
+           |> Current.map (fun preps ->
+                  preps
+                  |> List.filter_map (function
+                       | _, Error (`Msg _) -> None
+                       | pkg, (Error (`Active _) | Ok _) -> Some pkg)
+                  |> function
+                  | [] -> Package.Blessing.Set.empty opam
+                  | list -> Package.Blessing.Set.v ~counts list))
+  in
+  Log.info (fun f -> f "Day11: blessed universes computed");
+
+  (* For now, just track the build results *)
+  let build_results =
+    Package.Map.bindings prepped
+    |> List.map (fun (pkg, { Day11_pipeline.job; _ }) ->
+      let+ _result = Current.state ~hidden:true job in
+      OpamPackage.to_string (Package.opam pkg))
+    |> Current.list_seq
+  in
+  let+ _results = build_results
+  and+ _blessed = OpamPackage.Map.bindings blessed
+    |> List.map snd |> Current.list_seq in
+  ()
+
+let v ~config ~opam ~monitor ~migrations ?eio_env () =
+  match eio_env with
+  | Some env -> v_day11 ~config ~opam ~monitor ~migrations ~eio_env:env ()
+  | None ->
   let open Current.Syntax in
   let ssh = Config.ssh config in
   let migrations =
