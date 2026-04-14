@@ -18,7 +18,7 @@ end
 type t
 
 val cmdliner : t Cmdliner.Term.t
-val ssh : t -> Ssh.t
+val ssh : t -> Ssh.t option
 
 val odoc : t -> string
 (** Odoc version pin to use. *)
@@ -29,14 +29,14 @@ val sherlodoc : t -> string
 val pool : t -> string
 (** The ocluster pool to use *)
 
-val ocluster_connection_prep : t -> Current_ocluster.Connection.t
-(** Connection to the cluster for Prep *)
+val ocluster_connection_prep : t -> Current_ocluster.Connection.t option
+(** Connection to the cluster for Prep (None in day11 mode) *)
 
-val ocluster_connection_do : t -> Current_ocluster.Connection.t
-(** Connection to the cluster for Do *)
+val ocluster_connection_do : t -> Current_ocluster.Connection.t option
+(** Connection to the cluster for Do (None in day11 mode) *)
 
-val ocluster_connection_gen : t -> Current_ocluster.Connection.t
-(** Connection to the cluster for Gen *)
+val ocluster_connection_gen : t -> Current_ocluster.Connection.t option
+(** Connection to the cluster for Gen (None in day11 mode) *)
 
 val jobs : t -> int
 (** Number of jobs that can be spawned for the steps that are locally executed.
