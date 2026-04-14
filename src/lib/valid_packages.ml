@@ -28,7 +28,7 @@ module Op = struct
 
   let publish config job fpath packages =
     let open Lwt.Syntax in
-    let ssh = Config.ssh config in
+    let ssh = Option.get (Config.ssh config) in
     let* () = Current.Job.start ~level:Harmless job in
     let path = Fpath.to_string fpath in
     let () =

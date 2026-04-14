@@ -21,37 +21,37 @@ module Ssh = struct
   let named f = Cmdliner.Term.(app (const f))
 
   let ssh_host =
-    Arg.required
+    Arg.value
     @@ Arg.opt Arg.(some string) None
-    @@ Arg.info ~doc:"SSH storage server host" ~docv:"HOST" [ "ssh-host" ]
+    @@ Arg.info ~doc:"SSH storage server host (optional for day11 mode)" ~docv:"HOST" [ "ssh-host" ]
     |> named (fun x -> `SSH_host x)
 
   let ssh_user =
-    Arg.required
+    Arg.value
     @@ Arg.opt Arg.(some string) None
     @@ Arg.info ~doc:"SSH storage server user" ~docv:"USER" [ "ssh-user" ]
     |> named (fun x -> `SSH_user x)
 
   let ssh_port =
-    Arg.required
+    Arg.value
     @@ Arg.opt Arg.(some int) (Some 22)
     @@ Arg.info ~doc:"SSH storage server port" ~docv:"PORT" [ "ssh-port" ]
     |> named (fun x -> `SSH_port x)
 
   let ssh_privkey =
-    Arg.required
+    Arg.value
     @@ Arg.opt Arg.(some string) None
     @@ Arg.info ~doc:"SSH private key file" ~docv:"FILE" [ "ssh-privkey" ]
     |> named (fun x -> `SSH_privkey x)
 
   let ssh_pubkey =
-    Arg.required
+    Arg.value
     @@ Arg.opt Arg.(some string) None
     @@ Arg.info ~doc:"SSH public key file" ~docv:"FILE" [ "ssh-pubkey" ]
     |> named (fun x -> `SSH_pubkey x)
 
   let ssh_folder =
-    Arg.required
+    Arg.value
     @@ Arg.opt Arg.(some string) None
     @@ Arg.info ~doc:"SSH storage folder" ~docv:"FILE" [ "ssh-folder" ]
     |> named (fun x -> `SSH_folder x)
@@ -70,19 +70,27 @@ module Ssh = struct
 
   let v (`SSH_host host) (`SSH_user user) (`SSH_port port) (`SSH_pubkey pubkey)
       (`SSH_privkey privkey) (`SSH_folder folder) =
-    {
-      host;
-      user;
-      port;
-      private_key = load_file privkey;
-      private_key_file =
-        Fpath.(
-          (Bos.OS.Dir.current () |> Result.get_ok)
-          // (of_string privkey |> Result.get_ok)
-          |> to_string);
-      public_key = load_file pubkey;
-      folder;
-    }
+    match host with
+    | None -> None
+    | Some host ->
+      let user = Option.value ~default:"opam" user in
+      let port = Option.value ~default:22 port in
+      let privkey = Option.value ~default:"/dev/null" privkey in
+      let pubkey = Option.value ~default:"/dev/null" pubkey in
+      let folder = Option.value ~default:"/tmp" folder in
+      Some {
+        host;
+        user;
+        port;
+        private_key = (try load_file privkey with _ -> "");
+        private_key_file =
+          Fpath.(
+            (Bos.OS.Dir.current () |> Result.get_ok)
+            // (of_string privkey |> Result.get_ok)
+            |> to_string);
+        public_key = (try load_file pubkey with _ -> "");
+        folder;
+      }
 
   let cmdliner =
     Term.(
@@ -141,18 +149,18 @@ type t = {
   jobs : int;
   track_packages : string list;
   take_n_last_versions : int option;
-  ocluster_connection_prep : Current_ocluster.Connection.t;
-  ocluster_connection_do : Current_ocluster.Connection.t;
-  ocluster_connection_gen : Current_ocluster.Connection.t;
+  ocluster_connection_prep : Current_ocluster.Connection.t option;
+  ocluster_connection_do : Current_ocluster.Connection.t option;
+  ocluster_connection_gen : Current_ocluster.Connection.t option;
   cache_threshold : int;
   valid_packages_path : string;
-  ssh : Ssh.t;
+  ssh : Ssh.t option;
 }
 
 let cap_file =
-  Arg.required
+  Arg.value
   @@ Arg.opt Arg.(some string) None
-  @@ Arg.info ~doc:"Ocluster capability file" ~docv:"FILE"
+  @@ Arg.info ~doc:"Ocluster capability file (optional for day11 mode)" ~docv:"FILE"
        [ "ocluster-submission" ]
 
 let jobs =
@@ -184,26 +192,22 @@ let valid_packages_path =
 
 let v cap_file jobs track_packages take_n_last_versions ssh cache_threshold
     valid_packages_path =
-  let vat = Capnp_rpc_unix.client_only_vat () in
-  let cap = Capnp_rpc_unix.Cap_file.load vat cap_file |> Result.get_ok in
-
-  let ocluster_connection_prep =
-    Current_ocluster.Connection.create ~max_pipeline:100 cap
-  in
-  let ocluster_connection_do =
-    Current_ocluster.Connection.create ~max_pipeline:100 cap
-  in
-  let ocluster_connection_gen =
-    Current_ocluster.Connection.create ~max_pipeline:100 cap
+  let ocluster =
+    match cap_file with
+    | Some path ->
+      let vat = Capnp_rpc_unix.client_only_vat () in
+      let cap = Capnp_rpc_unix.Cap_file.load vat path |> Result.get_ok in
+      Some (Current_ocluster.Connection.create ~max_pipeline:100 cap)
+    | None -> None
   in
 
   {
     jobs;
     track_packages;
     take_n_last_versions;
-    ocluster_connection_prep;
-    ocluster_connection_do;
-    ocluster_connection_gen;
+    ocluster_connection_prep = ocluster;
+    ocluster_connection_do = ocluster;
+    ocluster_connection_gen = ocluster;
     valid_packages_path;
     ssh;
     cache_threshold;

@@ -102,12 +102,16 @@ let main () current_config github_auth mode capnp_public_address
   ignore @@ Eio_main.run @@ fun env ->
   Lwt_eio.with_event_loop ~clock:(Eio.Stdenv.clock env) @@ fun _token ->
   let eio_env = (env :> Eio_unix.Stdenv.base) in
-  (* Skip SSH storage init — day11 uses local layers *)
-  (match Docs_ci_lib.Init.setup (Docs_ci_lib.Config.ssh config) with
-   | Ok () -> ()
-   | Error (`Msg msg) ->
+  (* Skip SSH storage init if not configured — day11 uses local layers *)
+  (match Docs_ci_lib.Config.ssh config with
+   | None ->
+     Docs_ci_lib.Log.info (fun f -> f "No SSH config — running in day11 mode")
+   | Some ssh ->
+     match Docs_ci_lib.Init.setup ssh with
+     | Ok () -> ()
+     | Error (`Msg msg) ->
        Docs_ci_lib.Log.warn (fun f ->
-           f "SSH storage init failed (OK for day11 mode): %s" msg));
+           f "SSH storage init failed: %s" msg));
   Lwt_eio.run_lwt (fun () ->
   (* Skip Cap'n Proto setup — day11 solves locally *)
   let capnp_vat = Capnp_rpc_unix.client_only_vat () in

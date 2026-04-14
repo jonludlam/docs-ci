@@ -520,7 +520,7 @@ module Prep = struct
        For now we rebuild only if voodoo-prep changes.
     *)
     let spec =
-      spec ~ssh:(Config.ssh config) ~base ~tools_base ~opamfiles prep
+      spec ~ssh:(Option.get (Config.ssh config)) ~base ~tools_base ~opamfiles prep
     in
     let action = Misc.to_ocluster_submission spec in
     let version = Misc.cache_hint prep in
@@ -529,8 +529,8 @@ module Prep = struct
     let build_pool =
       Current_ocluster.Connection.pool ~job ~pool:(Config.pool config) ~action
         ~cache_hint
-        ~secrets:(Config.Ssh.secrets_values (Config.ssh config))
-        (Config.ocluster_connection_prep config)
+        ~secrets:(Config.Ssh.secrets_values (Option.get (Config.ssh config)))
+        (Option.get (Config.ocluster_connection_prep config))
     in
     let* build_job =
       Current.Job.start_with ~pool:build_pool ~level:Mostly_harmless job
