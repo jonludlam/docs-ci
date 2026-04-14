@@ -76,6 +76,8 @@ module BuildOp = struct
         layer_dir = Fpath.to_string layer_dir;
       }
     end else begin
+      (* Bridge from Lwt (OCurrent) to Eio (day11) *)
+      Lwt_eio.run_eio @@ fun () ->
       let dep_layers = List.map Fpath.v key.dep_layer_dirs in
       let node : Day11_opam_layer.Build.t = {
         hash = key.hash; pkg = key.pkg; deps = [];
@@ -86,13 +88,13 @@ module BuildOp = struct
       match result with
       | Day11_opam_build.Types.Success _bl ->
         Current.Job.log job "Build succeeded";
-        Lwt.return_ok Value.{
+        Ok Value.{
           pkg = OpamPackage.to_string key.pkg;
           hash = key.hash;
           layer_dir = Fpath.to_string layer_dir;
         }
       | _ ->
-        Lwt.return_error (`Msg (Printf.sprintf "Build failed for %s"
+        Error (`Msg (Printf.sprintf "Build failed for %s"
           (OpamPackage.to_string key.pkg)))
     end
 end
