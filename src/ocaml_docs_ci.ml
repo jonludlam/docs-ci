@@ -94,56 +94,61 @@ let run_capnp capnp_public_address capnp_listen_address =
       Lwt.return (vat, Some rpc_engine_resolver)
 
 let main () current_config github_auth mode capnp_public_address
-    capnp_listen_address config migrations =
-  ignore
-  @@ Logging.run
-       (let () =
-          match Docs_ci_lib.Init.setup (Docs_ci_lib.Config.ssh config) with
-          | Ok () -> ()
-          | Error (`Msg msg) ->
-              Docs_ci_lib.Log.err (fun f ->
-                  f "Failed to initialize the storage server:\n%s" msg);
-              exit 1
-        in
-        run_capnp capnp_public_address capnp_listen_address
-        >>= fun (_vat, rpc_engine_resolver) ->
-        let repo_opam =
-          Git.clone ~schedule:hourly
-            "https://github.com/ocaml/opam-repository.git"
-        in
-        let monitor = Docs_ci_lib.Monitor.make () in
-        let engine =
-          Current.Engine.create ~config:current_config (fun () ->
-              Docs_ci_pipelines.Docs.v ~config ~opam:repo_opam ~monitor
-                ~migrations ()
-              |> Current.ignore_value)
-        in
-        rpc_engine_resolver
-        |> Option.iter (fun r ->
-               Capability.resolve_ok r
-                 (Docs_ci_pipelines.Api_impl.make ~monitor));
+    capnp_listen_address config migrations : unit =
+  (* Set up Eio + Lwt bridge so day11 primitives (Eio) can be called
+     from OCurrent's Lwt pipeline. Eio_main.run provides the Eio env,
+     Lwt_eio.with_event_loop bridges the two event loops, and
+     Lwt_eio.run_lwt runs the OCurrent Lwt engine from Eio context. *)
+  ignore @@ Eio_main.run @@ fun env ->
+  Lwt_eio.with_event_loop ~clock:(Eio.Stdenv.clock env) @@ fun _token ->
+  let _eio_env = (env :> Eio_unix.Stdenv.base) in
+  let () =
+    match Docs_ci_lib.Init.setup (Docs_ci_lib.Config.ssh config) with
+    | Ok () -> ()
+    | Error (`Msg msg) ->
+        Docs_ci_lib.Log.err (fun f ->
+            f "Failed to initialize the storage server:\n%s" msg);
+        exit 1
+  in
+  Lwt_eio.run_lwt (fun () ->
+  run_capnp capnp_public_address capnp_listen_address
+  >>= fun (_vat, rpc_engine_resolver) ->
+  let repo_opam =
+    Git.clone ~schedule:hourly
+      "https://github.com/ocaml/opam-repository.git"
+  in
+  let monitor = Docs_ci_lib.Monitor.make () in
+  let engine =
+    Current.Engine.create ~config:current_config (fun () ->
+        Docs_ci_pipelines.Docs.v ~config ~opam:repo_opam ~monitor
+          ~migrations ()
+        |> Current.ignore_value)
+  in
+  rpc_engine_resolver
+  |> Option.iter (fun r ->
+         Capability.resolve_ok r
+           (Docs_ci_pipelines.Api_impl.make ~monitor));
 
-        let has_role =
-          if github_auth = None then Current_web.Site.allow_all else has_role
-        in
-        let secure_cookies = github_auth <> None in
-        let authn = Option.map Current_github.Auth.make_login_uri github_auth in
-        let site =
-          let routes =
-            Routes.(
-              (s "login" /? nil) @--> Current_github.Auth.login github_auth)
-            :: Docs_ci_lib.Monitor.routes monitor engine
-            @ Current_web.routes engine
-          in
-          Current_web.Site.(v ?authn ~has_role ~secure_cookies)
-            ~name:program_name routes
-        in
-        Lwt.choose
-          [
-            Current.Engine.thread engine;
-            (* The main thread evaluating the pipeline. *)
-            Current_web.run ~mode site (* Optional: provides a web UI *);
-          ])
+  let has_role =
+    if github_auth = None then Current_web.Site.allow_all else has_role
+  in
+  let secure_cookies = github_auth <> None in
+  let authn = Option.map Current_github.Auth.make_login_uri github_auth in
+  let site =
+    let routes =
+      Routes.(
+        (s "login" /? nil) @--> Current_github.Auth.login github_auth)
+      :: Docs_ci_lib.Monitor.routes monitor engine
+      @ Current_web.routes engine
+    in
+    Current_web.Site.(v ?authn ~has_role ~secure_cookies)
+      ~name:program_name routes
+  in
+  Lwt.choose
+    [
+      Current.Engine.thread engine;
+      Current_web.run ~mode site;
+    ])
 
 (* Command-line parsing *)
 
