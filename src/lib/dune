@@ -26,6 +26,18 @@
   solver_api
   ocaml-version
   omigrate
-  omigrate.sqlite3)
+  omigrate.sqlite3
+  day11.solution
+  day11.solver
+  day11.solver-pool
+  day11.opam-helpers
+  day11.opam-build
+  day11.opam-layer
+  day11.layer
+  day11.container
+  day11.runner
+  day11.exec
+  day11.doc
+  day11.batch)
  (preprocess
   (pps ppx_deriving_yojson ppx_deriving.std)))
