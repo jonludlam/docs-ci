@@ -101,7 +101,7 @@ let main () current_config github_auth mode capnp_public_address
      Lwt_eio.run_lwt runs the OCurrent Lwt engine from Eio context. *)
   ignore @@ Eio_main.run @@ fun env ->
   Lwt_eio.with_event_loop ~clock:(Eio.Stdenv.clock env) @@ fun _token ->
-  let _eio_env = (env :> Eio_unix.Stdenv.base) in
+  let eio_env = (env :> Eio_unix.Stdenv.base) in
   let () =
     match Docs_ci_lib.Init.setup (Docs_ci_lib.Config.ssh config) with
     | Ok () -> ()
@@ -121,7 +121,7 @@ let main () current_config github_auth mode capnp_public_address
   let engine =
     Current.Engine.create ~config:current_config (fun () ->
         Docs_ci_pipelines.Docs.v ~config ~opam:repo_opam ~monitor
-          ~migrations ()
+          ~migrations ~eio_env ()
         |> Current.ignore_value)
   in
   rpc_engine_resolver
