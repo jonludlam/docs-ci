@@ -25,6 +25,8 @@
   dune-build-info
   mirage-crypto-rng.unix
   prometheus-app.unix
+  eio_main
+  lwt_eio
   unix)
  (preprocess
   (pps ppx_deriving_yojson)))
