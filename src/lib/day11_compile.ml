@@ -68,6 +68,8 @@ module CompileOp = struct
     let build_layer = Fpath.v key.build_layer_dir in
     let dep_compile_layers = List.map Fpath.v key.dep_compile_layer_dirs in
     let os_dir = ctx.doc_env.build.os_dir in
+    (* Bridge from Lwt (OCurrent) to Eio (day11) *)
+    Lwt_eio.run_eio @@ fun () ->
     match key.jobty with
     | CompileOnly ->
       (match Day11_bridge.Compile.run ctx.doc_env
@@ -75,27 +77,27 @@ module CompileOp = struct
                ~hash:key.hash ~pkg:key.pkg with
        | Ok result ->
          let dir = Day11_bridge.Compile.layer_dir ~os_dir result in
-         Lwt.return_ok Value.{
+         Ok Value.{
            pkg = OpamPackage.to_string key.pkg;
            hash = key.hash;
            compile_layer_dir = Some (Fpath.to_string dir);
          }
        | Error (`Msg msg) ->
-         Lwt.return_error (`Msg msg))
+         Error (`Msg msg))
     | LinkOnly ->
-      let compile_layer = Fpath.v key.build_layer_dir in (* reuse field *)
+      let compile_layer = Fpath.v key.build_layer_dir in
       (match Day11_bridge.Link.run ctx.doc_env
                ~build_layer ~compile_layer
                ~dep_compile_layers ~html_dir:ctx.html_dir
                ~hash:key.hash ~pkg:key.pkg with
        | Ok () ->
-         Lwt.return_ok Value.{
+         Ok Value.{
            pkg = OpamPackage.to_string key.pkg;
            hash = key.hash;
            compile_layer_dir = None;
          }
        | Error msg ->
-         Lwt.return_error (`Msg msg))
+         Error (`Msg msg))
     | CompileAndLink ->
       (match Day11_bridge.Doc_all.run ctx.doc_env
                ~build_layer ~dep_compile_layers
@@ -103,13 +105,13 @@ module CompileOp = struct
                ~hash:key.hash ~pkg:key.pkg with
        | Ok result ->
          let dir = Day11_bridge.Doc_all.layer_dir ~os_dir result in
-         Lwt.return_ok Value.{
+         Ok Value.{
            pkg = OpamPackage.to_string key.pkg;
            hash = key.hash;
            compile_layer_dir = Some (Fpath.to_string dir);
          }
        | Error (`Msg msg) ->
-         Lwt.return_error (`Msg msg))
+         Error (`Msg msg))
 end
 
 module Cache = Current_cache.Make (CompileOp)
