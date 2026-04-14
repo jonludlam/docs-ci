@@ -45,7 +45,7 @@ let ensure_dir path =
       Logs.info (fun f -> f "Creating %s directory" path);
       Lwt_unix.mkdir path 0o777
 
-let run_capnp capnp_public_address capnp_listen_address =
+let _run_capnp capnp_public_address capnp_listen_address =
   match (capnp_public_address, capnp_listen_address) with
   | None, None -> Lwt.return (Capnp_rpc_unix.client_only_vat (), None)
   | Some _, None ->
@@ -102,17 +102,18 @@ let main () current_config github_auth mode capnp_public_address
   ignore @@ Eio_main.run @@ fun env ->
   Lwt_eio.with_event_loop ~clock:(Eio.Stdenv.clock env) @@ fun _token ->
   let eio_env = (env :> Eio_unix.Stdenv.base) in
-  let () =
-    match Docs_ci_lib.Init.setup (Docs_ci_lib.Config.ssh config) with
-    | Ok () -> ()
-    | Error (`Msg msg) ->
-        Docs_ci_lib.Log.err (fun f ->
-            f "Failed to initialize the storage server:\n%s" msg);
-        exit 1
-  in
+  (* Skip SSH storage init — day11 uses local layers *)
+  (match Docs_ci_lib.Init.setup (Docs_ci_lib.Config.ssh config) with
+   | Ok () -> ()
+   | Error (`Msg msg) ->
+       Docs_ci_lib.Log.warn (fun f ->
+           f "SSH storage init failed (OK for day11 mode): %s" msg));
   Lwt_eio.run_lwt (fun () ->
-  run_capnp capnp_public_address capnp_listen_address
-  >>= fun (_vat, rpc_engine_resolver) ->
+  (* Skip Cap'n Proto setup — day11 solves locally *)
+  let capnp_vat = Capnp_rpc_unix.client_only_vat () in
+  ignore capnp_vat;
+  ignore capnp_public_address;
+  ignore capnp_listen_address;
   let repo_opam =
     Git.clone ~schedule:hourly
       "https://github.com/ocaml/opam-repository.git"
@@ -124,10 +125,6 @@ let main () current_config github_auth mode capnp_public_address
           ~migrations ~eio_env ()
         |> Current.ignore_value)
   in
-  rpc_engine_resolver
-  |> Option.iter (fun r ->
-         Capability.resolve_ok r
-           (Docs_ci_pipelines.Api_impl.make ~monitor));
 
   let has_role =
     if github_auth = None then Current_web.Site.allow_all else has_role
