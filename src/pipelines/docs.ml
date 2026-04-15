@@ -109,6 +109,8 @@ let v ~config ~opam ~eio_env ~git_packages ~repos_with_shas
     | Some plan -> plan.node_kind
     | None -> fun _ -> Day11_doc.Generate.Build
   in
+  let pool = Current.Pool.create ~label:"day11-builds"
+    (Config.jobs config) in
   let node_cache : (string, Day11_prep.t Current.t) Hashtbl.t =
     Hashtbl.create (List.length all_dag_nodes) in
   let rec make_node (dag_node : Day11_opam_layer.Build.t) =
@@ -126,7 +128,7 @@ let v ~config ~opam ~eio_env ~git_packages ~repos_with_shas
         | Link -> "link"
       in
       let node =
-        Day11_prep.run_node ~env ~os_dir ~dispatch
+        Day11_prep.run_node ~env ~os_dir ~pool ~dispatch
           ~label ~dag_node ~deps ()
       in
       Hashtbl.replace node_cache dag_node.hash node;
