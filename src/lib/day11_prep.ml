@@ -44,6 +44,7 @@ module Op = struct
     (** The original DAG node with full deps, universe, etc. *)
     dispatch : Eio_unix.Stdenv.base -> Day11_opam_layer.Build.t -> bool;
     env : Eio_unix.Stdenv.base;
+    pool : unit Current.Pool.t;
   }
 
   module Key = struct
@@ -76,7 +77,7 @@ module Op = struct
 
   let build (ctx : t) job (key : Key.t) =
     let open Lwt.Syntax in
-    let* () = Current.Job.start job ~level:Current.Level.Average in
+    let* () = Current.Job.start job ~pool:ctx.pool ~level:Current.Level.Average in
     let layer = Day11_layer.Layer.of_hash ~os_dir:ctx.os_dir key.hash in
     Lwt_eio.run_eio @@ fun () ->
     let cached_ok = match Day11_layer.Meta.load (Day11_layer.Layer.meta_path layer) with
@@ -145,7 +146,7 @@ module Cache = Current_cache.Make (Op)
     [dag_node] is the original DAG node with full deps and universe.
     [dispatch] is called with the original node to execute it.
     [deps] are OCurrent dependencies that must complete first. *)
-let run_node ~env ~os_dir ~dispatch ~label
+let run_node ~env ~os_dir ~pool ~dispatch ~label
     ~(dag_node : Day11_opam_layer.Build.t) ~deps () : t Current.t =
   let open Current.Syntax in
   Current.component "%s %s" label (OpamPackage.to_string dag_node.pkg)
@@ -163,7 +164,7 @@ let run_node ~env ~os_dir ~dispatch ~label
     ) deps;
     Hashtbl.fold (fun _ v acc -> v :: acc) seen []
   in
-  Cache.get { os_dir; dag_node; dispatch; env }
+  Cache.get { os_dir; dag_node; dispatch; env; pool }
     Op.Key.{ hash = dag_node.hash; label; pkg = dag_node.pkg }
   |> Current.Primitive.map_result
        (Result.map (fun v ->
