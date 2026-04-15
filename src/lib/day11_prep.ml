@@ -3,122 +3,115 @@
     Replaces the OCluster + SSH prep stage. Each package is built
     locally in a container with dep layers stacked via overlayfs.
 
-    This module provides an OCurrent-compatible [v] function with the
-    same shape as [Prep.v] — it takes deps as [t list Current.t] and
-    returns [t Current.t], letting OCurrent handle DAG scheduling. *)
+    Caching is handled entirely by day11's content-addressed layer
+    store — if a layer with the right hash exists on disk, the build
+    returns immediately. No OCurrent cache layer needed. *)
 
 type t = {
-  package : Package.t;
+  pkg : OpamPackage.t;
   build_hash : string;
   layer_dir : Fpath.t;
+  all_layer_dirs : Fpath.t list;
+  (** This layer's dir plus all transitive dep layer dirs.
+      Used by parent builds to stack the full dep tree via overlayfs. *)
 }
 
-let package t = t.package
+let pkg t = t.pkg
 let build_hash t = t.build_hash
 let layer_dir t = t.layer_dir
+let all_layer_dirs t = t.all_layer_dirs
 
 let has_documentable_libs t =
   Day11_doc.Doc_build.has_documentable_libs t.layer_dir
 
 let pp f t =
   Fmt.pf f "day11-build(%s, %s)"
-    (OpamPackage.to_string (Package.opam t.package))
+    (OpamPackage.to_string t.pkg)
     (String.sub t.build_hash 0 (min 12 (String.length t.build_hash)))
 
 let compare a b = String.compare a.build_hash b.build_hash
 
-(* ── OCurrent cache builder ────────────────────────────────────── *)
+(* ── Build a single package ──────────────────────────────────────── *)
 
-module BuildOp = struct
-  type t = Day11_bridge.build_env
-
-  module Key = struct
-    type t = {
-      pkg : OpamPackage.t;
-      hash : string;
-      dep_layer_dirs : string list;  (* Fpath.t not serializable *)
-    }
-
-    let digest t = t.hash
-  end
-
-  module Value = struct
-    type t = {
-      pkg : string;
-      hash : string;
-      layer_dir : string;
-    }
-    [@@deriving yojson]
-
-    let marshal t = Yojson.Safe.to_string (to_yojson t)
-    let unmarshal s = of_yojson (Yojson.Safe.from_string s) |> Result.get_ok
-  end
-
-  let id = "day11-build"
-
-  let pp f (key : Key.t) =
-    Fmt.pf f "build %s" (OpamPackage.to_string key.pkg)
-
-  let auto_cancel = false
-
-  let build (ctx : t) job (key : Key.t) =
-    Current.Job.log job "Building %s (hash: %s)"
-      (OpamPackage.to_string key.pkg)
-      (String.sub key.hash 0 (min 12 (String.length key.hash)));
-    let os_dir = ctx.os_dir in
-    let layer_dir = Day11_layer.Dir.path ~os_dir key.hash in
-    (* Check disk cache *)
-    if Bos.OS.File.exists Fpath.(layer_dir / "layer.json") |> Result.get_ok then begin
-      Current.Job.log job "Cached on disk";
-      Lwt.return_ok Value.{
-        pkg = OpamPackage.to_string key.pkg;
-        hash = key.hash;
-        layer_dir = Fpath.to_string layer_dir;
-      }
-    end else begin
-      (* Bridge from Lwt (OCurrent) to Eio (day11) *)
-      Lwt_eio.run_eio @@ fun () ->
-      let dep_layers = List.map Fpath.v key.dep_layer_dirs in
-      let node : Day11_opam_layer.Build.t = {
-        hash = key.hash; pkg = key.pkg; deps = [];
-        universe = Day11_solution.Universe.dummy;
-      } in
-      let result = Day11_opam_build.Build_layer.build ctx.env ctx.benv
-        ~mounts:[] ~build_dirs:dep_layers node () in
-      match result with
-      | Day11_opam_build.Types.Success _bl ->
-        Current.Job.log job "Build succeeded";
-        Ok Value.{
-          pkg = OpamPackage.to_string key.pkg;
-          hash = key.hash;
-          layer_dir = Fpath.to_string layer_dir;
-        }
-      | _ ->
-        Error (`Msg (Printf.sprintf "Build failed for %s"
-          (OpamPackage.to_string key.pkg)))
-    end
-end
-
-module Cache = Current_cache.Make (BuildOp)
+let run_build (ctx : Day11_bridge.build_env) ~dep_layer_dirs ~extra_mounts
+    ~hash ~pkg =
+  let os_dir = ctx.os_dir in
+  let layer_dir = Day11_layer.Dir.path ~os_dir hash in
+  let dep_layers = List.map Fpath.v dep_layer_dirs in
+  let mounts = List.map (fun s ->
+    Day11_container.Mount.bind_ro ~src:s s
+  ) extra_mounts in
+  (* Add opam-build binary mount if cached version exists *)
+  let mounts = match Day11_opam_build.Base.opam_build_mount
+    ~cache_dir:ctx.cache_dir with
+    | Some m -> m :: mounts
+    | None -> mounts
+  in
+  let node : Day11_opam_layer.Build.t = {
+    hash; pkg; deps = [];
+    universe = Day11_solution.Universe.dummy;
+  } in
+  (* If a failed layer exists on disk, delete it so it gets rebuilt.
+     day11's Build_layer.build returns stale failures otherwise. *)
+  let layer_json = Fpath.(layer_dir / "layer.json") in
+  (match Day11_layer.Meta.load layer_json with
+   | Ok meta when meta.exit_status <> 0 ->
+     ignore (Bos.OS.Dir.delete ~recurse:true layer_dir)
+   | _ -> ());
+  (* day11's Build_layer.build handles its own disk caching:
+     if layer.json exists it returns immediately *)
+  let result = Day11_opam_build.Build_layer.build ctx.env ctx.benv
+    ~opam_repositories:ctx.opam_repositories
+    ~mounts ~build_dirs:dep_layers node () in
+  (* Read build log from disk *)
+  let log_file = Fpath.(layer_dir / "layer.log") in
+  let log_contents = match Bos.OS.File.read log_file with
+    | Ok contents -> Some contents
+    | Error _ -> None
+  in
+  match result with
+  | Day11_opam_build.Types.Success _bl ->
+    Ok (layer_dir, log_contents)
+  | Day11_opam_build.Types.Failure msg ->
+    Error (msg, log_contents)
+  | _ ->
+    Error (Printf.sprintf "Build failed for %s"
+      (OpamPackage.to_string pkg), log_contents)
 
 (* ── Public interface ──────────────────────────────────────────── *)
 
 (** Build a single package. [deps] are the already-built dep layers
     whose directories will be stacked as overlayfs lowers. *)
-let v ~(ctx : Day11_bridge.build_env) ~hash ~deps
-    (package : Package.t) : t Current.t =
+let v ~(ctx : Day11_bridge.build_env) ~hash ?(mounts = []) ~deps
+    (pkg : OpamPackage.t) : t Current.t =
   let open Current.Syntax in
-  Current.component "day11-build %s"
-    (OpamPackage.to_string (Package.opam package))
+  Current.component "build %s" (OpamPackage.to_string pkg)
   |>
   let> deps in
-  let dep_layer_dirs = List.map (fun (d : t) ->
-    Fpath.to_string d.layer_dir) deps in
-  let pkg = Package.opam package in
-  Cache.get ctx
-    BuildOp.Key.{ pkg; hash; dep_layer_dirs }
-  |> Current.Primitive.map_result
-       (Result.map (fun v ->
-         { package;
-           build_hash = v.BuildOp.Value.hash;
-           layer_dir = Fpath.v v.layer_dir }))
+  (* Collect ALL transitive dep layer dirs — each dep carries its own
+     layer dir plus all its deps' dirs. Deduplicate. *)
+  let all_dep_dirs =
+    let seen = Hashtbl.create 16 in
+    List.iter (fun (d : t) ->
+      List.iter (fun dir ->
+        let s = Fpath.to_string dir in
+        if not (Hashtbl.mem seen s) then
+          Hashtbl.replace seen s dir
+      ) d.all_layer_dirs
+    ) deps;
+    Hashtbl.fold (fun _ v acc -> v :: acc) seen []
+  in
+  let dep_layer_dirs = List.map Fpath.to_string all_dep_dirs in
+  let extra_mounts = List.map Fpath.to_string mounts in
+  (* Run build synchronously — day11's disk cache makes this instant
+     for already-built packages. No OCurrent cache layer needed. *)
+  let result =
+    run_build ctx ~dep_layer_dirs ~extra_mounts ~hash ~pkg
+  in
+  match result with
+  | Ok (layer_dir, _log) ->
+    Current.Primitive.const
+      { pkg; build_hash = hash; layer_dir;
+        all_layer_dirs = layer_dir :: all_dep_dirs }
+  | Error (msg, _log) ->
+    Current_incr.const (Error (`Msg msg), None)
