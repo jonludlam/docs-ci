@@ -1,6 +1,7 @@
 open Docs_ci_lib
 
-let v ~config ~opam ~eio_env ~git_packages ~repos_with_shas () =
+let v ~config ~opam ~eio_env ~git_packages ~repos_with_shas
+    ~html_dir () =
   let open Current.Syntax in
   let env = eio_env in
   let os_dir = Fpath.v (Sys.getenv_opt "DAY11_OS_DIR"
@@ -49,25 +50,91 @@ let v ~config ~opam ~eio_env ~git_packages ~repos_with_shas () =
     ~base_hash build_solutions in
   Log.info (fun f -> f "%d build nodes" (List.length nodes));
 
-  (* 4) Build all packages as individual OCurrent nodes *)
-  let build_ctx : Day11_bridge.build_env = {
-    env; benv; os_dir; cache_dir;
-    opam_repositories = [ Fpath.v opam_repo ];
-  } in
+  (* 4) Plan the doc DAG — tool solving + compile/link node construction.
+     This runs synchronously (tool solving is fast) and returns the
+     unified DAG nodes that we'll turn into OCurrent nodes below. *)
+  let repo_mount = Day11_container.Mount.bind_ro
+    ~src:opam_repo "/home/opam/.opam/repo/default" in
+  let base_mounts =
+    [ repo_mount ] @
+    (match Day11_opam_build.Base.opam_build_mount ~cache_dir with
+     | Some m -> [ m ] | None -> [])
+  in
+  let target_solutions = List.map (fun (s : Day11_solver.solution) ->
+    (s.target, s.solve_result)
+  ) solutions in
+  let blessing_maps = List.map (fun (target, (result : Day11_solution.Solve_result.t)) ->
+    (target, OpamPackage.Map.map (fun _ -> true) result.build_deps)
+  ) target_solutions in
+  let doc_plan = match html_dir with
+    | None -> None
+    | Some _ ->
+      Day11_doc.Generate.plan_doc_dag benv ~os_dir
+        ~packages:git_packages ~repos:repos_with_shas
+        ~mounts:base_mounts ~odoc_repo:None
+        ~build_one:(fun node ->
+          match Day11_opam_build.Build_layer.build env benv
+                  ~opam_repositories:[ Fpath.v opam_repo ]
+                  ~mounts:base_mounts node () with
+          | Day11_opam_build.Types.Success _ -> true
+          | _ -> false)
+        ~cache:hash_cache ~nodes
+        ~solutions:target_solutions ~blessing_maps ()
+  in
+
+  (* 5) Create OCurrent nodes from the DAG.
+     Use the doc plan's all_nodes if available, otherwise just build nodes.
+     Each node becomes a separate OCurrent component visible in the web UI. *)
+  let all_dag_nodes = match doc_plan with
+    | Some plan ->
+      Log.info (fun f -> f "Doc DAG: %d total nodes"
+        (List.length plan.all_nodes));
+      plan.all_nodes
+    | None -> nodes
+  in
+  (* Dispatch callbacks for each node type *)
+  let build_dispatch _env node =
+    match Day11_opam_build.Build_layer.build _env benv
+            ~opam_repositories:[ Fpath.v opam_repo ]
+            ~mounts:base_mounts node () with
+    | Day11_opam_build.Types.Success _ -> true
+    | _ -> false
+  in
+  let doc_dispatch = match doc_plan with
+    | Some plan -> plan.build_one
+    | None -> fun _env _node -> true
+  in
+  let node_kind = match doc_plan with
+    | Some plan -> plan.node_kind
+    | None -> fun _ -> Day11_doc.Generate.Build
+  in
   let node_cache : (string, Day11_prep.t Current.t) Hashtbl.t =
-    Hashtbl.create (List.length nodes) in
-  let rec build_node (dag_node : Day11_opam_layer.Build.t) =
+    Hashtbl.create (List.length all_dag_nodes) in
+  let rec make_node (dag_node : Day11_opam_layer.Build.t) =
     match Hashtbl.find_opt node_cache dag_node.hash with
     | Some existing -> existing
     | None ->
-      let dep_currents = List.map build_node dag_node.deps in
+      let dep_currents = List.map make_node dag_node.deps in
       let deps = Current.list_seq dep_currents in
+      let kind = node_kind dag_node in
+      let label = match kind with
+        | Day11_doc.Generate.Build -> "build"
+        | Tool -> "tool"
+        | Compile -> "compile"
+        | Doc_all -> "doc"
+        | Link -> "link"
+      in
+      let dispatch = match kind with
+        | Day11_doc.Generate.Build -> build_dispatch
+        | _ -> doc_dispatch
+      in
       let node =
-        Day11_prep.v ~ctx:build_ctx ~hash:dag_node.hash ~deps dag_node.pkg
+        Day11_prep.run_node ~env ~os_dir ~dispatch
+          ~label ~dag_node ~deps ()
       in
       Hashtbl.replace node_cache dag_node.hash node;
       node
   in
-  let all_build_nodes = List.map build_node nodes in
-  let+ _results = Current.list_seq all_build_nodes in
+  let all_nodes = List.map make_node all_dag_nodes in
+  let+ _results = Current.list_seq all_nodes in
   ()

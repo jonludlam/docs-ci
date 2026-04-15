@@ -7,6 +7,13 @@
   current_git
   current_web
   lwt
-  lwt.unix)
+  lwt.unix
+  day11.lib
+  day11.doc
+  day11.opam-build
+  day11.opam-layer
+  day11.layer
+  day11.container
+  day11.solution)
  (preprocess
   (pps ppx_deriving_yojson)))
