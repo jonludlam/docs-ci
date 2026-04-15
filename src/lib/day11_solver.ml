@@ -46,13 +46,15 @@ module SolveOp = struct
     Current.Job.log job "Solving %d packages (commit %s)"
       (List.length key.targets)
       (String.sub key.commit 0 (min 12 (String.length key.commit)));
-    (* Solver_pool uses blocking Unix calls (create_process, waitpid).
-       Run in a systhread so it doesn't block the Eio scheduler
-       (and therefore Lwt / the web server). *)
+    (* Run in systhread so blocking Unix calls (create_process,
+       waitpid) don't freeze the Eio scheduler / Lwt web server.
+       Progress callback writes to the job log after each worker. *)
     Lwt_eio.run_eio @@ fun () ->
     let results =
       Eio_unix.run_in_systhread @@ fun () ->
       Day11_solver_pool.Solver_pool.solve_many
+        ~on_progress:(fun ~done_count ~total ->
+          Current.Job.log job "Solving: %d/%d" done_count total)
         ~np:4 ~repos:ctx.repos_with_shas key.targets
     in
     let result_pairs = List.filter_map (fun (pkg, result) ->
