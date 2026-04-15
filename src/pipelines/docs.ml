@@ -92,17 +92,18 @@ let v ~config ~opam ~eio_env ~git_packages ~repos_with_shas
       plan.all_nodes
     | None -> nodes
   in
-  (* Dispatch callbacks for each node type *)
-  let build_dispatch _env node =
-    match Day11_opam_build.Build_layer.build _env benv
-            ~opam_repositories:[ Fpath.v opam_repo ]
-            ~mounts:base_mounts node () with
-    | Day11_opam_build.Types.Success _ -> true
-    | _ -> false
-  in
-  let doc_dispatch = match doc_plan with
+  (* Single dispatch that handles all node types. For build-only mode
+     (no docs), just build. With docs, the plan's dispatch handles
+     build, tool, compile, link, and doc-all via internal classification. *)
+  let dispatch = match doc_plan with
     | Some plan -> plan.build_one
-    | None -> fun _env _node -> true
+    | None ->
+      fun _env node ->
+        match Day11_opam_build.Build_layer.build _env benv
+                ~opam_repositories:[ Fpath.v opam_repo ]
+                ~mounts:base_mounts node () with
+        | Day11_opam_build.Types.Success _ -> true
+        | _ -> false
   in
   let node_kind = match doc_plan with
     | Some plan -> plan.node_kind
@@ -123,10 +124,6 @@ let v ~config ~opam ~eio_env ~git_packages ~repos_with_shas
         | Compile -> "compile"
         | Doc_all -> "doc"
         | Link -> "link"
-      in
-      let dispatch = match kind with
-        | Day11_doc.Generate.Build -> build_dispatch
-        | _ -> doc_dispatch
       in
       let node =
         Day11_prep.run_node ~env ~os_dir ~dispatch
