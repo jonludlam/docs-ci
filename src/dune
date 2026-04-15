@@ -9,8 +9,6 @@
   current_github
   current_web
   current_docker
-  astring
-  dockerfile
   cmdliner
   fmt.tty
   logs.fmt
@@ -18,7 +16,6 @@
   lwt
   lwt.unix
   memtrace
-  obuilder-spec
   opam-file-format
   docs_ci_pipelines
   docs_ci_lib

@@ -1,17 +1,13 @@
-open Lwt.Infix
-open Capnp_rpc_lwt
 module Git = Current_git
 
 let setup_log default_level =
   Prometheus_unix.Logging.init ?default_level ();
   Mirage_crypto_rng_unix.initialize (module Mirage_crypto_rng.Fortuna);
-  Logging.init ();
   Memtrace.trace_if_requested ~context:"ocaml-docs-ci" ()
 
 let hourly = Current_cache.Schedule.v ~valid_for:(Duration.of_hour 1) ()
 let program_name = "ocaml-docs-ci"
 
-(* Access control policy. *)
 let has_role user = function
   | `Viewer | `Monitor -> true
   | _ -> (
@@ -24,77 +20,7 @@ let has_role user = function
           true
       | _ -> false)
 
-let or_die = function Ok x -> x | Error (`Msg m) -> failwith m
-
-let check_dir x =
-  Lwt.catch
-    (fun () ->
-      Lwt_unix.stat x >|= function
-      | Unix.{ st_kind = S_DIR; _ } -> `Present
-      | _ -> Fmt.failwith "Exists, but is not a directory: %S" x)
-    (function
-      | Unix.Unix_error (Unix.ENOENT, _, _) -> Lwt.return `Missing
-      | exn -> Lwt.fail exn)
-
-let ensure_dir path =
-  check_dir path >>= function
-  | `Present ->
-      Logs.info (fun f -> f "Directory %s exists" path);
-      Lwt.return_unit
-  | `Missing ->
-      Logs.info (fun f -> f "Creating %s directory" path);
-      Lwt_unix.mkdir path 0o777
-
-let _run_capnp capnp_public_address capnp_listen_address =
-  match (capnp_public_address, capnp_listen_address) with
-  | None, None -> Lwt.return (Capnp_rpc_unix.client_only_vat (), None)
-  | Some _, None ->
-      Lwt.fail_invalid_arg
-        "Public address for Cap'n Proto RPC can't be set without setting a \
-         capnp-listen-address to listen on."
-  | Some _, Some _ | None, Some _ ->
-      let ci_profile =
-        match Sys.getenv_opt "CI_PROFILE" with
-        | Some "production" | None -> `Production
-        | Some "dev" -> `Dev
-        | Some x -> Fmt.failwith "Unknown $CI_PROFILE setting %S." x
-      in
-      let cap_secrets =
-        match ci_profile with
-        | `Production -> "/capnp-secrets"
-        | `Dev -> "./capnp-secrets"
-      in
-      let secret_key = cap_secrets ^ "/secret-key.pem" in
-      let cap_file = cap_secrets ^ "/ocaml-docs-ci.cap" in
-      let internal_port = 9000 in
-
-      let listen_address =
-        match capnp_listen_address with
-        | Some listen_address -> listen_address
-        | None ->
-            Capnp_rpc_unix.Network.Location.tcp ~host:"0.0.0.0"
-              ~port:internal_port
-      in
-      let public_address =
-        match capnp_public_address with
-        | None -> listen_address
-        | Some public_address -> public_address
-      in
-      ensure_dir cap_secrets >>= fun () ->
-      let config =
-        Capnp_rpc_unix.Vat_config.create ~public_address
-          ~secret_key:(`File secret_key) listen_address
-      in
-      let rpc_engine, rpc_engine_resolver = Capability.promise () in
-      let service_id = Capnp_rpc_unix.Vat_config.derived_id config "ci" in
-      let restore = Capnp_rpc_net.Restorer.single service_id rpc_engine in
-      Capnp_rpc_unix.serve config ~restore >>= fun vat ->
-      Capnp_rpc_unix.Cap_file.save_service vat service_id cap_file |> or_die;
-      Logs.app (fun f -> f "Wrote capability reference to %S" cap_file);
-      Lwt.return (vat, Some rpc_engine_resolver)
-
-let main () current_config github_auth mode capnp_public_address
-    capnp_listen_address config migrations : unit =
+let main () current_config github_auth mode config : unit =
   (* Pre-compute git_packages BEFORE entering the Eio event loop,
      because git-unix uses Lwt_main.run internally which can't be
      nested inside Lwt_eio's event loop. *)
@@ -102,37 +28,19 @@ let main () current_config github_auth mode capnp_public_address
     |> Option.value ~default:(Sys.getenv "HOME" ^ "/ocaml/opam-repository") in
   let git_packages, repos_with_shas =
     Day11_opam.Git_packages.of_repositories [ (opam_repo, None) ] in
-  (* Eio_main.run is the top-level event loop.
-     Lwt_eio.with_event_loop sets up Lwt's backend to use Eio.
-     OCurrent (Lwt) runs via Lwt_eio.Promise.await_lwt from Eio context.
-     day11 (Eio) runs via Lwt_eio.run_eio from OCurrent's Lwt context. *)
   ignore @@ Eio_main.run @@ fun env ->
   Lwt_eio.with_event_loop ~clock:(Eio.Stdenv.clock env) @@ fun _token ->
   let eio_env = (env :> Eio_unix.Stdenv.base) in
-  (* Skip SSH storage init if not configured — day11 uses local layers *)
-  (match Docs_ci_lib.Config.ssh config with
-   | None ->
-     Docs_ci_lib.Log.info (fun f -> f "No SSH config — running in day11 mode")
-   | Some ssh ->
-     match Docs_ci_lib.Init.setup ssh with
-     | Ok () -> ()
-     | Error (`Msg msg) ->
-       Docs_ci_lib.Log.warn (fun f ->
-           f "SSH storage init failed: %s" msg));
-  ignore capnp_public_address;
-  ignore capnp_listen_address;
   let repo_opam =
     Git.clone ~schedule:hourly
       "https://github.com/ocaml/opam-repository.git"
   in
-  let monitor = Docs_ci_lib.Monitor.make () in
   let engine =
     Current.Engine.create ~config:current_config (fun () ->
-        Docs_ci_pipelines.Docs.v ~config ~opam:repo_opam ~monitor
-          ~migrations ~eio_env ~git_packages ~repos_with_shas ()
+        Docs_ci_pipelines.Docs.v ~config ~opam:repo_opam
+          ~eio_env ~git_packages ~repos_with_shas ()
         |> Current.ignore_value)
   in
-
   let has_role =
     if github_auth = None then Current_web.Site.allow_all else has_role
   in
@@ -142,21 +50,16 @@ let main () current_config github_auth mode capnp_public_address
     let routes =
       Routes.(
         (s "login" /? nil) @--> Current_github.Auth.login github_auth)
-      :: Docs_ci_lib.Monitor.routes monitor engine
-      @ Current_web.routes engine
+      :: Current_web.routes engine
     in
     Current_web.Site.(v ?authn ~has_role ~secure_cookies)
       ~name:program_name routes
   in
-  (* await_lwt blocks the Eio fiber until the Lwt promise resolves,
-     while allowing other Eio fibers and Lwt threads to run *)
   Lwt_eio.Promise.await_lwt (Lwt.choose
     [
       Current.Engine.thread engine;
       Current_web.run ~mode site;
     ])
-
-(* Command-line parsing *)
 
 open Cmdliner
 
@@ -164,45 +67,13 @@ let setup_log =
   let docs = Manpage.s_common_options in
   Term.(const setup_log $ Logs_cli.level ~docs ())
 
-let capnp_public_address =
-  Arg.value
-  @@ Arg.opt (Arg.some Capnp_rpc_unix.Network.Location.cmdliner_conv) None
-  @@ Arg.info
-       ~doc:
-         "Public address (SCHEME:HOST:PORT) for Cap'n Proto RPC (default: no \
-          RPC).\n\
-         \          If --capnp-listen-address isn't set it will run no RPC."
-       ~docv:"ADDR" [ "capnp-public-address" ]
-
-let capnp_listen_address =
-  let i =
-    Arg.info ~docv:"ADDR"
-      ~doc:
-        "Address to listen on, e.g. $(b,unix:/run/my.socket) (default: no RPC)."
-      [ "capnp-listen-address" ]
-  in
-  Arg.(
-    value
-    @@ opt (Arg.some Capnp_rpc_unix.Network.Location.cmdliner_conv) None
-    @@ i)
-
-let migrations =
-  Arg.(
-    value
-    @@ opt (some dir) None
-    @@ info ~docv:"MIGRATIONS_PATH"
-         ~doc:
-           "Specify the path to the migration directory. If no path is given \
-            the migration step is ignored."
-         [ "migration-path" ])
-
 let version =
   match Build_info.V1.version () with
   | None -> "n/a"
   | Some v -> Build_info.V1.Version.to_string v
 
 let cmd =
-  let doc = "An OCurrent pipeline" in
+  let doc = "OCaml documentation CI pipeline" in
   let info = Cmd.info program_name ~doc ~version in
   Cmd.v info
     Term.(
@@ -211,9 +82,6 @@ let cmd =
       $ Current.Config.cmdliner
       $ Current_github.Auth.cmdliner
       $ Current_web.cmdliner
-      $ capnp_public_address
-      $ capnp_listen_address
-      $ Docs_ci_lib.Config.cmdliner
-      $ migrations)
+      $ Docs_ci_lib.Config.cmdliner)
 
 let () = exit @@ Cmd.eval cmd

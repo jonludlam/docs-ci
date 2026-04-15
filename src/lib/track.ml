@@ -97,7 +97,23 @@ module Track = struct
     | Error e -> Lwt.return_error e
 end
 
-module TrackCache = Misc.LatchedBuilder (Track)
+module LatchedBuilder (B : Current_cache.S.BUILDER) = struct
+  module Adaptor = struct
+    type t = B.t
+    let id = B.id
+    module Key = Current.String
+    module Value = B.Key
+    module Outcome = B.Value
+    let run op job _ key = B.build op job key
+    let pp f (_, key) = B.pp f key
+    let auto_cancel = B.auto_cancel
+    let latched = true
+  end
+  include Current_cache.Generic (Adaptor)
+  let get ~opkey ?schedule ctx key = run ?schedule ctx opkey key
+end
+
+module TrackCache = LatchedBuilder (Track)
 open Track.Value
 
 type t = package_definition [@@deriving yojson]
@@ -108,7 +124,7 @@ let digest t = t.digest
 module Map = OpamStd.Map.Make (struct
   type nonrec t = t
 
-  let compare a b = O.OpamPackage.compare a.package b.package
+  let compare a b = OpamPackage.compare a.package b.package
 
   let to_json { package; digest } =
     `A [ OpamPackage.to_json package; `String digest ]

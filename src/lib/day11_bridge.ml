@@ -11,6 +11,7 @@ type build_env = {
   benv : Day11_opam_build.Types.build_env;
   os_dir : Fpath.t;
   cache_dir : Fpath.t;
+  opam_repositories : Fpath.t list;
 }
 
 type doc_env = {
