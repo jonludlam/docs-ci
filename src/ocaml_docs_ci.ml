@@ -20,7 +20,7 @@ let has_role user = function
           true
       | _ -> false)
 
-let main () current_config github_auth mode config : unit =
+let main () current_config github_auth mode html_dir config : unit =
   (* Pre-compute git_packages BEFORE entering the Eio event loop,
      because git-unix uses Lwt_main.run internally which can't be
      nested inside Lwt_eio's event loop. *)
@@ -38,7 +38,8 @@ let main () current_config github_auth mode config : unit =
   let engine =
     Current.Engine.create ~config:current_config (fun () ->
         Docs_ci_pipelines.Docs.v ~config ~opam:repo_opam
-          ~eio_env ~git_packages ~repos_with_shas ()
+          ~eio_env ~git_packages ~repos_with_shas
+          ~html_dir ()
         |> Current.ignore_value)
   in
   let has_role =
@@ -67,6 +68,12 @@ let setup_log =
   let docs = Manpage.s_common_options in
   Term.(const setup_log $ Logs_cli.level ~docs ())
 
+let html_dir =
+  Arg.value
+  @@ Arg.opt Arg.(some string) None
+  @@ Arg.info ~doc:"Generate documentation and write HTML to DIR"
+       ~docv:"DIR" [ "with-doc" ]
+
 let version =
   match Build_info.V1.version () with
   | None -> "n/a"
@@ -82,6 +89,7 @@ let cmd =
       $ Current.Config.cmdliner
       $ Current_github.Auth.cmdliner
       $ Current_web.cmdliner
+      $ html_dir
       $ Docs_ci_lib.Config.cmdliner)
 
 let () = exit @@ Cmd.eval cmd
