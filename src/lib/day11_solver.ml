@@ -47,9 +47,11 @@ module SolveOp = struct
       (List.length key.targets)
       (String.sub key.commit 0 (min 12 (String.length key.commit)));
     (* Solver_pool uses blocking Unix calls (create_process, waitpid).
-       Wrap in run_eio so they run in an Eio fiber without blocking Lwt. *)
+       Run in a systhread so it doesn't block the Eio scheduler
+       (and therefore Lwt / the web server). *)
     Lwt_eio.run_eio @@ fun () ->
     let results =
+      Eio_unix.run_in_systhread @@ fun () ->
       Day11_solver_pool.Solver_pool.solve_many
         ~np:4 ~repos:ctx.repos_with_shas key.targets
     in
