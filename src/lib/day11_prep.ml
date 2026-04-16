@@ -37,11 +37,15 @@ let compare a b = String.compare a.build_hash b.build_hash
    Current_cache provides the job/log infrastructure; day11's disk
    cache provides the real caching. *)
 
-module Op = struct
+(* Per-kind Op modules so job filenames include the node kind
+   (e.g. "day11-build-XXXXXX.log" instead of "day11-node-XXXXXX.log"). *)
+
+module type LABEL = sig val label : string end
+
+module Make_op (L : LABEL) = struct
   type t = {
     os_dir : Fpath.t;
     dag_node : Day11_opam_layer.Build.t;
-    (** The original DAG node with full deps, universe, etc. *)
     dispatch : Eio_unix.Stdenv.base -> Day11_opam_layer.Build.t -> bool;
     env : Eio_unix.Stdenv.base;
     pool : unit Current.Pool.t;
@@ -50,7 +54,6 @@ module Op = struct
   module Key = struct
     type t = {
       hash : string;
-      label : string;
       pkg : OpamPackage.t;
     }
     let digest t = t.hash
@@ -68,10 +71,11 @@ module Op = struct
     let unmarshal s = of_yojson (Yojson.Safe.from_string s) |> Result.get_ok
   end
 
-  let id = "day11-node"
+  let label = L.label
+  let id = "day11-" ^ L.label
 
   let pp f (key : Key.t) =
-    Fmt.pf f "%s %s" key.label (OpamPackage.to_string key.pkg)
+    Fmt.pf f "%s %s" label (OpamPackage.to_string key.pkg)
 
   let auto_cancel = false
 
@@ -99,7 +103,7 @@ module Op = struct
       | Error _ -> false
     in
     if cached_ok then begin
-      Current.Job.log job "Cached: %s %s" key.label
+      Current.Job.log job "Cached: %s %s" label
         (OpamPackage.to_string key.pkg);
       Ok Value.{
         pkg = OpamPackage.to_string key.pkg;
@@ -107,7 +111,7 @@ module Op = struct
         layer_dir = Fpath.to_string (Day11_layer.Layer.dir layer);
       }
     end else begin
-      Current.Job.log job "%s %s (%s)" key.label
+      Current.Job.log job "%s %s (%s)" label
         (OpamPackage.to_string key.pkg)
         (String.sub key.hash 0 (min 12 (String.length key.hash)));
       let success = ctx.dispatch ctx.env ctx.dag_node in
@@ -119,10 +123,10 @@ module Op = struct
          | Ok meta ->
            let tf name = Day11_layer.Meta.timing_field name meta.timing in
            Current.Job.log job "OK: %s %s (runc: %.1fs, disk: %dKB)"
-             key.label (OpamPackage.to_string key.pkg)
+             label (OpamPackage.to_string key.pkg)
              (tf "runc_run") (meta.disk_usage / 1024)
          | Error _ ->
-           Current.Job.log job "OK: %s %s" key.label
+           Current.Job.log job "OK: %s %s" label
              (OpamPackage.to_string key.pkg));
         Ok Value.{
           pkg = OpamPackage.to_string key.pkg;
@@ -130,15 +134,25 @@ module Op = struct
           layer_dir = Fpath.to_string (Day11_layer.Layer.dir layer);
         }
       end else begin
-        Current.Job.log job "FAILED: %s %s" key.label
+        Current.Job.log job "FAILED: %s %s" label
           (OpamPackage.to_string key.pkg);
-        Error (`Msg (Printf.sprintf "%s failed: %s" key.label
+        Error (`Msg (Printf.sprintf "%s failed: %s" label
           (OpamPackage.to_string key.pkg)))
       end
     end
 end
 
-module Cache = Current_cache.Make (Op)
+module Op_build   = Make_op (struct let label = "build" end)
+module Op_tool    = Make_op (struct let label = "tool" end)
+module Op_compile = Make_op (struct let label = "compile" end)
+module Op_doc     = Make_op (struct let label = "doc" end)
+module Op_link    = Make_op (struct let label = "link" end)
+
+module Cache_build   = Current_cache.Make (Op_build)
+module Cache_tool    = Current_cache.Make (Op_tool)
+module Cache_compile = Current_cache.Make (Op_compile)
+module Cache_doc     = Current_cache.Make (Op_doc)
+module Cache_link    = Current_cache.Make (Op_link)
 
 (* ── Public interface ──────────────────────────────────────────── *)
 
@@ -152,7 +166,6 @@ let run_node ~env ~os_dir ~pool ~dispatch ~label
   Current.component "%s %s" label (OpamPackage.to_string dag_node.pkg)
   |>
   let> deps in
-  (* Collect transitive dep layer dirs from completed deps *)
   let all_dep_dirs =
     let seen = Hashtbl.create 16 in
     List.iter (fun (d : t) ->
@@ -164,12 +177,44 @@ let run_node ~env ~os_dir ~pool ~dispatch ~label
     ) deps;
     Hashtbl.fold (fun _ v acc -> v :: acc) seen []
   in
-  Cache.get { os_dir; dag_node; dispatch; env; pool }
-    Op.Key.{ hash = dag_node.hash; label; pkg = dag_node.pkg }
+  let result =
+    match label with
+    | "build" ->
+      Cache_build.get { os_dir; dag_node; dispatch; env; pool }
+        Op_build.Key.{ hash = dag_node.hash; pkg = dag_node.pkg }
+      |> Current.Primitive.map_result
+        (Result.map (fun v ->
+          (v.Op_build.Value.hash, Fpath.v v.Op_build.Value.layer_dir)))
+    | "tool" ->
+      Cache_tool.get { os_dir; dag_node; dispatch; env; pool }
+        Op_tool.Key.{ hash = dag_node.hash; pkg = dag_node.pkg }
+      |> Current.Primitive.map_result
+        (Result.map (fun v ->
+          (v.Op_tool.Value.hash, Fpath.v v.Op_tool.Value.layer_dir)))
+    | "compile" ->
+      Cache_compile.get { os_dir; dag_node; dispatch; env; pool }
+        Op_compile.Key.{ hash = dag_node.hash; pkg = dag_node.pkg }
+      |> Current.Primitive.map_result
+        (Result.map (fun v ->
+          (v.Op_compile.Value.hash, Fpath.v v.Op_compile.Value.layer_dir)))
+    | "doc" ->
+      Cache_doc.get { os_dir; dag_node; dispatch; env; pool }
+        Op_doc.Key.{ hash = dag_node.hash; pkg = dag_node.pkg }
+      |> Current.Primitive.map_result
+        (Result.map (fun v ->
+          (v.Op_doc.Value.hash, Fpath.v v.Op_doc.Value.layer_dir)))
+    | "link" ->
+      Cache_link.get { os_dir; dag_node; dispatch; env; pool }
+        Op_link.Key.{ hash = dag_node.hash; pkg = dag_node.pkg }
+      |> Current.Primitive.map_result
+        (Result.map (fun v ->
+          (v.Op_link.Value.hash, Fpath.v v.Op_link.Value.layer_dir)))
+    | l -> Fmt.failwith "Unknown node label: %s" l
+  in
+  result
   |> Current.Primitive.map_result
-       (Result.map (fun v ->
-         let own_dir = Fpath.v v.Op.Value.layer_dir in
+       (Result.map (fun (hash, own_dir) ->
          { pkg = dag_node.pkg;
-           build_hash = v.Op.Value.hash;
+           build_hash = hash;
            layer_dir = own_dir;
            all_layer_dirs = own_dir :: all_dep_dirs }))
