@@ -8,6 +8,18 @@ let setup_log default_level =
 let hourly = Current_cache.Schedule.v ~valid_for:(Duration.of_hour 1) ()
 let program_name = "ocaml-docs-ci"
 
+(* Custom handler for /pipeline.svg that short-circuits with a small
+   response. Rendering the pipeline at our scale (11K+ nodes) invokes
+   dot which burns CPU and can crash the browser. *)
+let no_pipeline_svg = object
+  inherit Current_web.Resource.t
+  val! can_get = `Viewer
+  method! private get _ctx =
+    let body = "<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"400\" height=\"40\"><text x=\"10\" y=\"25\" font-family=\"sans-serif\" font-size=\"14\">Pipeline diagram disabled — too large to render</text></svg>" in
+    let headers = Cohttp.Header.init_with "Content-Type" "image/svg+xml" in
+    Cohttp_lwt_unix.Server.respond_string ~status:`OK ~headers ~body ()
+end
+
 let has_role user = function
   | `Viewer | `Monitor -> true
   | _ -> (
@@ -49,9 +61,11 @@ let main () current_config github_auth mode html_dir config : unit =
   let authn = Option.map Current_github.Auth.make_login_uri github_auth in
   let site =
     let routes =
-      Routes.(
-        (s "login" /? nil) @--> Current_github.Auth.login github_auth)
-      :: Current_web.routes engine
+      Routes.[
+        (s "login" /? nil) @--> Current_github.Auth.login github_auth;
+        (s "pipeline.svg" /? nil) @--> no_pipeline_svg;
+      ]
+      @ Current_web.routes engine
     in
     Current_web.Site.(v ?authn ~has_role ~secure_cookies)
       ~name:program_name routes
