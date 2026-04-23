@@ -29,10 +29,14 @@ module Track = struct
       ^ (limit |> Option.map string_of_int |> Option.value ~default:"")
   end
 
-  let pp f { Key.repo; filter; _ } =
-    Fmt.pf f "opam repo track\n%a\n%a" Git.Commit.pp_short repo
-      Fmt.(list string)
-      filter
+  let pp f { Key.repo; filter; limit } =
+    let limit_s = match limit with
+      | None -> "all"
+      | Some n -> string_of_int n
+    in
+    Fmt.pf f "opam repo track (limit=%s) %a [%a]"
+      limit_s Git.Commit.pp_short repo
+      Fmt.(list ~sep:(any ",") string) filter
 
   module Value = struct
     type package_definition = { package : OpamPackage.t; digest : string }
@@ -133,9 +137,38 @@ module Map = OpamStd.Map.Make (struct
   let to_string t = OpamPackage.to_string t.package
 end)
 
-let v ~limit ~(filter : string list) (repo : Git.Commit.t Current.t) =
+let v ~repo_label ~limit ~(filter : string list)
+    (repo : Git.Commit.t Current.t) =
   let open Current.Syntax in
-  Current.component "Track packages - %a" Fmt.(list string) filter
+  (* [repo_label] distinguishes same-(filter, limit) calls that feed
+     from different repos — e.g. the ocaml mainline + oxcaml overlay
+     fan-out in a single profile, or two profiles that both track
+     mainline. Without it, OCurrent treats the shared component as
+     one "instance" and errors "set to different values in the same
+     step" when the input commits don't match. *)
+  let limit_s = match limit with
+    | None -> "all"
+    | Some n -> string_of_int n
+  in
+  Current.component "Track %s (limit=%s) - %a" repo_label limit_s
+    Fmt.(list string) filter
   |> let> repo in
-     (* opkey is a constant because we expect only one instance of track *)
-     TrackCache.get ~opkey:"track" No_context { filter; repo; limit }
+     (* opkey disambiguates at the LatchedBuilder layer too. *)
+     let opkey = Printf.sprintf "track-%s-%s-%s"
+       repo_label limit_s (String.concat "," filter) in
+     TrackCache.get ~opkey No_context { filter; repo; limit }
+
+(** Union multiple per-repo tracking results, with later repos'
+    entries overriding earlier by [(name, version)] — mirroring
+    opam's overlay resolution. *)
+let merge (tracks : t list Current.t list) : t list Current.t =
+  let open Current.Syntax in
+  let+ lists = Current.list_seq tracks in
+  let table = Hashtbl.create 1024 in
+  List.iter (fun per_repo ->
+    List.iter (fun (pkg : t) ->
+      Hashtbl.replace table pkg.package pkg
+    ) per_repo
+  ) lists;
+  Hashtbl.fold (fun _ v acc -> v :: acc) table []
+  |> List.sort (fun a b -> -(OpamPackage.compare a.package b.package))

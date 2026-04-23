@@ -114,39 +114,52 @@ end
 
 module Cache = Current_cache.Make (Op)
 
-(** Is [s] a URL we should clone via [Current_git]? *)
-let is_url s =
-  let starts p =
-    String.length s >= String.length p
-    && String.sub s 0 (String.length p) = p in
-  starts "http://" || starts "https://" || starts "git+"
-  || starts "git@" || starts "ssh://"
+(** Resolve one [opam_repositories] entry to a live
+    [Current_git.Commit.t Current.t]. Entries are local paths;
+    [Current_git.Local] watches each path's [.git] dir via inotify,
+    so whatever refreshes the clone (manual [git pull],
+    {!Docs_ci_lib.Remote_opam_repo.maintain}, or a cron job) flows
+    through automatically. *)
+let repo_commit ~schedule:_ ~git_local_cache entry : Current_git.Commit.t Current.t =
+  let path = Fpath.v entry in
+  let local =
+    match Hashtbl.find_opt git_local_cache entry with
+    | Some l -> l
+    | None ->
+      let l = Current_git.Local.v path in
+      Hashtbl.replace git_local_cache entry l;
+      l in
+  Current_git.Local.head_commit local
 
 (** A live [(path, sha) Current.t] for one entry of a profile's
-    [opam_repositories]. URLs flow through [Current_git.clone] with
-    hourly polling; local paths flow through [Current_git.Local] which
-    watches the .git dir via inotify. *)
+    [opam_repositories]. Paths are observed via {!Current_git.Local}
+    only — URL-based cloning lives in
+    {!Docs_ci_lib.Remote_opam_repo}, kept separate so that the
+    [Day11_batch.Profile] stays local-path-only across both
+    ocaml-docs-ci and the [day11] CLI. *)
 let repo_source ~schedule ~git_local_cache entry : (string * string) Current.t =
   let open Current.Syntax in
-  if is_url entry then begin
-    let commit = Current_git.clone ~schedule entry in
-    let+ c = commit in
-    let path = Fpath.to_string (Current_git.Commit.repo c) in
-    let sha = Current_git.Commit_id.hash (Current_git.Commit.id c) in
-    (path, sha)
-  end else begin
-    let path = Fpath.v entry in
-    let local =
-      match Hashtbl.find_opt git_local_cache entry with
-      | Some l -> l
-      | None ->
-        let l = Current_git.Local.v path in
-        Hashtbl.replace git_local_cache entry l;
-        l in
-    let+ commit = Current_git.Local.head_commit local in
-    let sha = Current_git.Commit_id.hash (Current_git.Commit.id commit) in
-    (entry, sha)
-  end
+  let commit = repo_commit ~schedule ~git_local_cache entry in
+  let+ commit = commit in
+  let sha = Current_git.Commit_id.hash (Current_git.Commit.id commit) in
+  (entry, sha)
+
+(** The commits that drive package tracking for a profile.
+
+    Returns one [Current_git.Commit.t Current.t] per entry in
+    [profile.opam_repositories], in declaration order. Callers merge
+    per-repo tracking results with "later entry wins" semantics,
+    matching opam's overlay behaviour — so a profile's oxcaml overlay
+    can both {e add} new packages (e.g. [oxcaml-compiler]) and {e
+    override} mainline entries by name+version. *)
+let tracking_commits ~schedule ~git_local_cache (profile : Profile.t) =
+  match profile.opam_repositories with
+  | [] ->
+    failwith (Printf.sprintf
+      "profile %s: opam_repositories is empty — nothing to track"
+      profile.name)
+  | entries ->
+    List.map (repo_commit ~schedule ~git_local_cache) entries
 
 (** Full repos_with_shas [Current.t] for a profile. *)
 let repos_with_shas ~schedule ~git_local_cache (profile : Profile.t) =
@@ -170,6 +183,11 @@ type resolved = {
   ctx : Day11_batch.Profile_ctx.t Current.t;
   snapshot_dir : Fpath.t Current.t;
   repos_with_shas : (string * string) list Current.t;
+  tracking_commits : Current_git.Commit.t Current.t list;
+    (** One commit per entry in [profile.opam_repositories], in
+        declaration order. Callers run [Track.v] per commit and
+        merge with "later wins" so overlay repos contribute their
+        own packages on top of mainline. *)
 }
 
 let resolve ~schedule ~git_local_cache ~cache_dir (profile : Profile.t) =
@@ -193,4 +211,5 @@ let resolve ~schedule ~git_local_cache ~cache_dir (profile : Profile.t) =
     let+ repos_with_shas = repos in
     snapshot_dir_of ~cache_dir ~profile_name:profile.name repos_with_shas
   in
-  { ctx; snapshot_dir; repos_with_shas = repos }
+  let tracking_commits = tracking_commits ~schedule ~git_local_cache profile in
+  { ctx; snapshot_dir; repos_with_shas = repos; tracking_commits }

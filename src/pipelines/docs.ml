@@ -1,107 +1,255 @@
 open Docs_ci_lib
+module Profile = Day11_batch.Profile
+module Profile_ctx = Day11_batch.Profile_ctx
 
-let v ~config ~opam ~eio_env ~git_packages ~repos_with_shas
-    ~html_dir () =
-  let open Current.Syntax in
-  let env = eio_env in
-  let os_dir = Fpath.v (Sys.getenv_opt "DAY11_OS_DIR"
-    |> Option.value ~default:"/var/cache/day11/debian-bookworm-x86_64") in
-  let cache_dir = Fpath.v (Sys.getenv_opt "DAY11_CACHE_DIR"
-    |> Option.value ~default:"/var/cache/day11") in
-  ignore (Bos.OS.Dir.create ~path:true os_dir);
-  ignore (Bos.OS.Dir.create ~path:true cache_dir);
-  let base = match Day11_opam_build.Base.load_cached ~cache_dir
-    ~os_distribution:"debian" ~os_version:"bookworm" with
-  | Some b -> b
+(* Public alias so [Ocaml_docs_ci] can pass profile contexts in
+   without depending on the internal type. *)
+type profile_ctx = Profile_ctx.t
+
+(* Poll the base image digest once a day. The result feeds
+   [Day11_base.ensure], so a new upstream image triggers a fresh
+   [docker build], and the digest flows into the base layer hash —
+   every dependent build layer rebuilds when the base changes. *)
+let base_digest_schedule =
+  Current_cache.Schedule.v ~valid_for:(Duration.of_day 1) ()
+
+(* Per-profile doc sub-pipeline. Each profile carries its own:
+   - opam_repositories (repos_with_shas + git_packages indexed from them)
+   - os_distribution / os_version / arch (→ base image + os_dir)
+   - base_image_digest (optional pinning)
+   - html_dir (per-profile output; [None] = build-only)
+   All profiles share the global [config] and the tracked [opam]
+   commit (the source of truth for which packages to track).
+
+   The base image (+ opam-build binary) is built via the
+   {!Day11_base.ensure} OCurrent op, which surfaces in [/jobs] with
+   live docker build logs. The rest of the pipeline is gated on
+   that job succeeding. *)
+(* Single process-wide build pool. Must be created once, not inside
+   the pipeline body — the Engine re-evaluates the body on every
+   tick, and a fresh pool per tick means old in-flight jobs keep
+   their slots while new ones draw from a new budget, overshooting
+   [Config.jobs]. One pool across profiles also prevents the total
+   concurrency from scaling with the number of profiles. *)
+let build_pool : unit Current.Pool.t option ref = ref None
+
+let get_build_pool capacity =
+  match !build_pool with
+  | Some p -> p
   | None ->
-    Logs.err (fun f -> f "No cached base image. Run 'day11 batch' first.");
-    failwith "No base image — run 'day11 batch' to create one"
-  in
-  let benv = Day11_opam_build.Types.make_build_env ~base ~os_dir () in
-  let base_hash = Day11_opam_build.Base.build_hash
-    ~os_distribution:"debian" ~os_version:"bookworm" ~arch:"x86_64" () in
+    let p = Current.Pool.create ~label:"day11-builds" capacity in
+    build_pool := Some p;
+    p
 
-  (* 1) Track packages *)
+let v_for_profile ~config ~eio_env ~cache_dir:_ ?cpu_slots
+    ~(tracking_commits : Current_git.Commit.t Current.t list)
+    (ctx_current : profile_ctx Current.t) =
+  let open Current.Syntax in
+  let* (ctx : profile_ctx) = ctx_current in
+  let ctx = match cpu_slots with
+    | Some pool -> Profile_ctx.with_cpu_slots ctx pool
+    | None -> ctx in
+  let profile = ctx.profile in
+  let env = eio_env in
+  ignore (Bos.OS.Dir.create ~path:true ctx.os_dir);
+  (* Resolve the current arch-specific digest of the upstream image
+     on a daily schedule. Changes flow into [Day11_base.ensure] and
+     — via [Profile_ctx.with_base_digest] — into the base layer hash,
+     so every dependent build rehashes when the upstream image moves. *)
+  let digest =
+    Day11_base_digest.current
+      ~schedule:base_digest_schedule
+      ~image:(Profile.base_image_tag profile)
+      ~arch:profile.arch
+  in
+  (* Wait for base image + opam-build binary; shown as an OCurrent
+     job with [docker build] output visible to the web UI. Also
+     threads the digest into the base layer hash so every build
+     layer rebuilds when the upstream image changes. *)
+  let base_ready = Day11_base.ensure ~env ~digest ctx in
+  let* () = base_ready in
+  let* d = digest in
+  let ctx = Profile_ctx.with_base_digest ctx d in
+  (* After [Day11_base.ensure] succeeds the base layer is on disk;
+     require_base is a cheap marker-file check. *)
+  let ctx = match Profile_ctx.require_base ctx with
+    | Ok c -> c
+    | Error (`Msg msg) ->
+      Logs.err (fun f -> f "[%s] %s" profile.name msg);
+      failwith msg
+  in
+  let benv = ctx.benv in
+
+  (* 1) Track packages — per profile, honouring [target_mode]. The
+     global config's [--limit] / [--filter] act as a fallback when
+     the profile doesn't constrain things (All_versions + no named
+     packages). *)
+  let profile_limit = Profile.track_limit profile in
+  let profile_filter = Profile.track_filter profile in
+  let limit = match profile_limit with
+    | Some _ as l -> l
+    | None -> Config.take_n_last_versions config
+  in
+  let filter = match profile_filter with
+    | [] -> Config.track_packages config
+    | f -> f
+  in
+  (* Fan out [Track.v] across all of [profile.opam_repositories] and
+     merge. [repo_label] (the static path string, stable across
+     ticks) distinguishes per-repo components so OCurrent doesn't
+     collide different repos into one "instance" when multiple
+     profiles share the same filter+limit. *)
   let tracked =
-    Track.v
-      ~limit:(Config.take_n_last_versions config)
-      ~filter:(Config.track_packages config)
-      opam
+    List.map2
+      (fun repo_label commit ->
+        Track.v ~repo_label ~limit ~filter commit)
+      profile.opam_repositories tracking_commits
+    |> Track.merge
   in
 
-  (* 2) Solve *)
-  let opam_repo = Sys.getenv_opt "DAY11_OPAM_REPO"
-    |> Option.value ~default:(Sys.getenv "HOME" ^ "/ocaml/opam-repository") in
-  let solutions = Day11_solver.solve ~opam_repo ~repos_with_shas
-    ~opam_commit:opam tracked in
+  (* 2) Solve against this profile's repo set. Pin the compiler to
+     the profile's [compiler] field so solutions honour the profile
+     (e.g. [ocaml-variants.5.2.0+ox] for the oxcaml profile). Without
+     this the solver falls back to mainline ocaml-base-compiler and
+     picks mainline dune/ppxlib/etc, ignoring oxcaml overlays. *)
+  let solutions =
+    Day11_solver.solve ~env ~np:(Config.jobs config)
+      ~profile_name:profile.name
+      ~repos_with_shas:ctx.repos_with_shas
+      ?ocaml_version:ctx.ocaml_version
+      ~cache_dir:ctx.cache_dir
+      (* [opam_commit] drives the solver's re-run trigger and goes
+         into the cache key. Pick mainline (first entry) — overlay
+         commits already flow through [repos_with_shas] which is
+         part of the same cache key, so this doesn't lose anything. *)
+      ~opam_commit:(List.hd tracking_commits) tracked
+  in
   let* solutions in
+  (* Drop solutions whose build_deps graph contains a cycle. The
+     solver's backtracking can legitimately produce a cyclic solution
+     when the target's own constraints corner it (e.g. [owi.0.2] with
+     [ocaml < 5.2] ending up on [ppxlib.0.33.0+ox + ppxlib_jane.v0.17]
+     in the oxcaml profile — the oxcaml overlay's patched ppxlib adds
+     a [ppxlib_jane] back-edge). [build_dag] can't produce a sensible
+     node for such a target, so filter them out up-front and log. *)
+  let solutions, dropped =
+    List.partition (fun (s : Day11_solver.solution) ->
+      not (Day11_solution.Deps.has_cycle s.solve_result.build_deps))
+      solutions in
+  List.iter (fun (s : Day11_solver.solution) ->
+    Log.warn (fun f -> f "[%s] dropping %s: solver output has dep cycle"
+      profile.name (OpamPackage.to_string s.target))) dropped;
+  Log.info (fun f -> f "[%s] solved %d packages (%d dropped for cycles)"
+    profile.name (List.length solutions) (List.length dropped));
 
-  Log.info (fun f -> f "Solved %d packages" (List.length solutions));
-
-  (* 3) Build DAG from solutions *)
-  let find_opam pkg =
-    try Some (Day11_opam.Git_packages.get_package git_packages pkg)
-    with Not_found -> None in
+  (* 3) Build DAG — reuse the shared hash cache from the ctx. *)
   let build_solutions = List.map (fun (s : Day11_solver.solution) ->
     (s.target, s.solve_result.build_deps)
   ) solutions in
-  let hash_cache = Day11_opam_build.Hash_cache.create ~find_opam () in
-  let nodes = Day11_opam_build.Dag.build_dag hash_cache
-    ~base_hash build_solutions in
-  Log.info (fun f -> f "%d build nodes" (List.length nodes));
+  let nodes = Day11_opam_build.Dag.build_dag ctx.hash_cache
+    ~base_hash:ctx.base.hash build_solutions in
+  Log.info (fun f -> f "[%s] %d build nodes"
+    profile.name (List.length nodes));
 
-  (* 4) Plan the doc DAG — tool solving + compile/link node construction.
-     This runs synchronously (tool solving is fast) and returns the
-     unified DAG nodes that we'll turn into OCurrent nodes below. *)
+  (* 4) Doc plan (only if this profile has an html_dir).
+
+     Both doc and build containers mount a single merged opam-repo
+     assembled from all of [profile.opam_repositories] (earlier wins
+     at top-level; later repos override at the packages/ level). We
+     build it once per snapshot and reuse the same mount for both
+     sets of containers — matching [day11 build]'s setup, where the
+     merged repo shadows [container_backend]'s per-node temp-repo and
+     opam sees the full package universe instead of just [node.pkg].
+     That matters because opam's [installed_opams] lookup for packages
+     marked installed by [Opamh.dump_state] falls through to the
+     configured repo when the [.opam-switch/packages/<pkg>/opam] file
+     isn't visible; without the full repo, opam reports those packages
+     as "No definition found" and filter-expanding
+     [%\{ocaml-config:share\}%] (inside [ocaml.X.Y]'s build) yields an
+     empty string. *)
+  let snapshot_dir =
+    Day11_profile_ctx_loader.snapshot_dir_of
+      ~cache_dir:ctx.cache_dir
+      ~profile_name:profile.name
+      ctx.repos_with_shas in
+  let merged_repo_dir = Fpath.(snapshot_dir / "merged-repo") in
+  (match Day11_opam_layer.Opam_repo.build_merged
+           ~dest:merged_repo_dir profile.opam_repositories with
+   | Ok () -> ()
+   | Error (`Msg e) ->
+     Log.err (fun f -> f "[%s] failed to build merged repo: %s"
+       profile.name e);
+     failwith e);
   let repo_mount = Day11_container.Mount.bind_ro
-    ~src:opam_repo "/home/opam/.opam/repo/default" in
-  let base_mounts =
-    [ repo_mount ] @
-    (match Day11_opam_build.Base.opam_build_mount ~cache_dir with
-     | Some m -> [ m ] | None -> [])
+    ~src:(Fpath.to_string merged_repo_dir)
+    "/home/opam/.opam/repo/default" in
+  let opam_build_mnt =
+    match Day11_opam_build.Base.opam_build_mount
+            ~cache_dir:ctx.cache_dir
+            ?opam_build_repo:(Option.map Fpath.v profile.opam_build_repo)
+            () with
+    | Some m -> [ m ] | None -> []
   in
+  let doc_mounts = [ repo_mount ] @ opam_build_mnt in
+  let build_mounts = [ repo_mount ] @ opam_build_mnt in
+  let opam_repos_fpath = List.map Fpath.v profile.opam_repositories in
   let target_solutions = List.map (fun (s : Day11_solver.solution) ->
     (s.target, s.solve_result)
   ) solutions in
-  let blessing_maps = List.map (fun (target, (result : Day11_solution.Solve_result.t)) ->
-    (target, OpamPackage.Map.map (fun _ -> true) result.build_deps)
-  ) target_solutions in
-  let doc_plan = match html_dir with
+  let blessing_maps = List.map
+    (fun (target, (result : Day11_solution.Solve_result.t)) ->
+      (target, OpamPackage.Map.map (fun _ -> true) result.build_deps)
+    ) target_solutions in
+  (* [plan_doc_dag] forks 9+ fibers (driver + per-compiler odoc),
+     each running a [day11-solver-worker] subprocess. Subprocess
+     awaits go through [Sys.Run.run] which yields on socket I/O,
+     so under [Lwt_eio.with_event_loop] the cohttp web server gets
+     scheduler cycles between yields and stays responsive. The
+     parallelisation in [resolve_tools] cuts this from ~18s to
+     ~3s wall-clock. *)
+  let doc_plan = match profile.html_dir with
     | None -> None
     | Some _ ->
-      Day11_doc.Generate.plan_doc_dag benv ~os_dir
-        ~packages:git_packages ~repos:repos_with_shas
-        ~mounts:base_mounts ~odoc_repo:None
+      Eio.Switch.run @@ fun plan_sw ->
+      Day11_doc.Generate.plan_doc_dag ~sw:plan_sw env ctx
+        ~mounts:doc_mounts
         ~build_one:(fun node ->
-          match Day11_opam_build.Build_layer.build env benv
-                  ~opam_repositories:[ Fpath.v opam_repo ]
-                  ~mounts:base_mounts node () with
+          Eio.Switch.run @@ fun sw ->
+          match Day11_opam_build.Build_layer.build ~sw env benv
+                  ~opam_repositories:opam_repos_fpath
+                  ~mounts:build_mounts node () with
           | Day11_opam_build.Types.Success _ -> true
           | _ -> false)
-        ~cache:hash_cache ~nodes
+        ~nodes
         ~solutions:target_solutions ~blessing_maps ()
   in
-
-  (* 5) Create OCurrent nodes from the DAG.
-     Use the doc plan's all_nodes if available, otherwise just build nodes.
-     Each node becomes a separate OCurrent component visible in the web UI. *)
   let all_dag_nodes = match doc_plan with
     | Some plan ->
-      Log.info (fun f -> f "Doc DAG: %d total nodes"
-        (List.length plan.all_nodes));
+      let nb, nt, nc, nd, nl = List.fold_left (fun (b, t, c, d, l) n ->
+        match plan.node_kind n with
+        | Day11_doc.Generate.Build -> (b+1, t, c, d, l)
+        | Tool -> (b, t+1, c, d, l)
+        | Compile -> (b, t, c+1, d, l)
+        | Doc_all -> (b, t, c, d+1, l)
+        | Link -> (b, t, c, d, l+1)
+      ) (0, 0, 0, 0, 0) plan.all_nodes in
+      Log.info (fun f -> f "[%s] doc DAG: %d total nodes \
+                             (build=%d tool=%d compile=%d doc=%d link=%d)"
+        profile.name (List.length plan.all_nodes) nb nt nc nd nl);
       plan.all_nodes
     | None -> nodes
   in
-  (* Single dispatch that handles all node types. For build-only mode
-     (no docs), just build. With docs, the plan's dispatch handles
-     build, tool, compile, link, and doc-all via internal classification. *)
-  let dispatch = match doc_plan with
-    | Some plan -> plan.build_one
+  let dispatch : Eio_unix.Stdenv.base -> Day11_opam_layer.Build.t -> bool =
+    match doc_plan with
+    | Some plan ->
+      fun _env node ->
+        Eio.Switch.run @@ fun sw -> plan.build_one ~sw _env node
     | None ->
       fun _env node ->
-        match Day11_opam_build.Build_layer.build _env benv
-                ~opam_repositories:[ Fpath.v opam_repo ]
-                ~mounts:base_mounts node () with
+        Eio.Switch.run @@ fun sw ->
+        match Day11_opam_build.Build_layer.build ~sw _env benv
+                ~opam_repositories:opam_repos_fpath
+                ~mounts:build_mounts node () with
         | Day11_opam_build.Types.Success _ -> true
         | _ -> false
   in
@@ -109,8 +257,47 @@ let v ~config ~opam ~eio_env ~git_packages ~repos_with_shas
     | Some plan -> plan.node_kind
     | None -> fun _ -> Day11_doc.Generate.Build
   in
-  let pool = Current.Pool.create ~label:"day11-builds"
-    (Config.jobs config) in
+  let pool = get_build_pool (Config.jobs config) in
+  (* Per-snapshot Recorder for the day11 batch CLI's snapshot layout
+     ([packages/<pkg>/history.jsonl] + [status.json]). Lets users
+     navigate via [day11 status / failures / results] etc. against
+     the live ocaml-docs-ci pipeline. Created once per tick — but
+     dedup is keyed by hash inside [recorded] so a node's outcome
+     gets written to history at most once per tick.
+
+     [run_log]'s files live under [snapshot_dir/runs/]; we use a
+     fresh run id per tick. [blessing_maps] is empty for now —
+     per-build blessing isn't reflected in the day11 CLI output yet.
+     *)
+  let packages_dir = Day11_batch.Snapshot.packages_dir snapshot_dir in
+  ignore (Bos.OS.Dir.create ~path:true packages_dir);
+  Day11_lib.Run_log.set_log_base_dir (Fpath.to_string snapshot_dir);
+  let run_log = Day11_lib.Run_log.start_run () in
+  (* Persist the planned-node counters so mid-run CLIs
+     ([day11 status / results / failures]) can report a denominator
+     via [Day11_batch.Live_view]. *)
+  let count_kind kind = match doc_plan with
+    | None -> if kind = Day11_doc.Generate.Build
+              then List.length nodes else 0
+    | Some plan -> List.fold_left (fun acc n ->
+        if plan.node_kind n = kind then acc + 1 else acc)
+        0 plan.all_nodes in
+  Day11_lib.Run_log.write_doc_dag run_log
+    ~n_build:(count_kind Day11_doc.Generate.Build)
+    ~n_tool:(count_kind Day11_doc.Generate.Tool)
+    ~n_compile:(count_kind Day11_doc.Generate.Compile)
+    ~n_doc_all:(count_kind Day11_doc.Generate.Doc_all)
+    ~n_link:(count_kind Day11_doc.Generate.Link);
+  let recorder = Day11_batch.Recorder.create
+    ~env ~benv ~os_dir:ctx.os_dir ~packages_dir
+    ~blessing_maps:[] ~run_log in
+  let recorded : (string, unit) Hashtbl.t = Hashtbl.create 1024 in
+  let record_once (dag_node : Day11_opam_layer.Build.t) ~success =
+    if not (Hashtbl.mem recorded dag_node.hash) then begin
+      Hashtbl.replace recorded dag_node.hash ();
+      Day11_batch.Recorder.record_build recorder dag_node ~success
+    end
+  in
   let node_cache : (string, Day11_prep.t Current.t) Hashtbl.t =
     Hashtbl.create (List.length all_dag_nodes) in
   let rec make_node (dag_node : Day11_opam_layer.Build.t) =
@@ -127,13 +314,90 @@ let v ~config ~opam ~eio_env ~git_packages ~repos_with_shas
         | Doc_all -> "doc"
         | Link -> "link"
       in
+      let raw =
+        Day11_prep.run_node ~env ~os_dir:ctx.os_dir ~pool ~dispatch
+          ~label ~profile_name:profile.name ~dag_node ~deps ()
+      in
+      (* Catch + map to record outcome the first time the node settles
+         to Ok or Error in this tick. The result is the same as [raw]
+         so downstream consumers see the original Pending/Ok/Error
+         state; the side effect is just the recorder write. *)
       let node =
-        Day11_prep.run_node ~env ~os_dir ~pool ~dispatch
-          ~label ~dag_node ~deps ()
+        let open Current.Syntax in
+        let+ res = Current.catch raw in
+        let success = Result.is_ok res in
+        record_once dag_node ~success;
+        match res with
+        | Ok v -> v
+        | Error _ ->
+          (* Synthesise a Day11_prep.t for failed nodes so consumers
+             that rely on the value still get something. The dir is
+             where the failed layer would have been written. *)
+          let layer_dir =
+            Day11_layer.Layer.dir
+              (Day11_layer.Layer.of_hash ~os_dir:ctx.os_dir
+                 dag_node.hash) in
+          { Day11_prep.pkg = dag_node.pkg;
+            build_hash = dag_node.hash;
+            layer_dir;
+            all_layer_dirs = [ layer_dir ] }
       in
       Hashtbl.replace node_cache dag_node.hash node;
       node
   in
   let all_nodes = List.map make_node all_dag_nodes in
-  let+ _results = Current.list_seq all_nodes in
+  (* Collapse the build+doc subtree into a single node in the
+     pipeline diagram. All the individual build/doc [Current.t]s
+     are still created (so the [/jobs] page and per-node caching
+     work as before), but [pipeline.svg] renders them as one "[+]"
+     node per profile which the user can expand on demand. Without
+     this, the diagram has thousands of nodes and [dot] can't
+     render it. *)
+  let collapsed_builds =
+    Current.collapse
+      ~key:"profile-builds" ~value:profile.name
+      ~input:ctx_current
+      (Current.list_seq all_nodes)
+  in
+  let+ _results = collapsed_builds in
+  (* Settle the snapshot: write history entries from accumulated
+     outcomes and regenerate [status.json]. Triggered each time
+     [list_seq] re-evaluates; the recorder dedups so we don't
+     duplicate history rows within a single tick. *)
+  let compiler = match ctx.ocaml_version with
+    | Some pkg -> OpamPackage.to_string pkg
+    | None -> "unknown" in
+  let results : Day11_batch.Summary.results = {
+    builds = Day11_batch.Recorder.outcomes recorder;
+    docs = [];
+    targets = List.map (fun (s : Day11_solver.solution) -> s.target)
+                solutions;
+  } in
+  ignore (Day11_batch.Summary.finish ~snapshot_dir ~packages_dir
+            ~run_info:run_log ~compiler results);
   ()
+
+(* Fan out across profiles: each profile gets its own sub-pipeline
+   composed under [Current.all]. Profiles with the same os_dir share
+   the layer cache automatically, so overlapping package builds
+   dedupe at the Day11_prep/OCurrent level.
+
+   Each profile's [Profile_ctx.t] is itself a [Current.t] built from
+   live [Current_git] polling of its [opam_repositories] — so changes
+   to any repo (remote or local) invalidate the solver cache. See
+   [Day11_profile_ctx_loader]. *)
+let v ~config ~eio_env ~cache_dir ~profiles ~git_local_cache
+    ?cpu_slots () =
+  let sched_hourly =
+    Current_cache.Schedule.v ~valid_for:(Duration.of_hour 1) () in
+  let sub_pipelines =
+    List.map (fun profile ->
+      let resolved =
+        Day11_profile_ctx_loader.resolve ~schedule:sched_hourly
+          ~git_local_cache ~cache_dir profile in
+      v_for_profile ~config ~eio_env ~cache_dir ?cpu_slots
+        ~tracking_commits:resolved.tracking_commits
+        resolved.ctx
+    ) profiles
+  in
+  Current.all sub_pipelines
