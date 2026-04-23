@@ -24,9 +24,11 @@
   day11.layer
   day11.container
   day11.runner
-  day11.exec
+  day11.sys
   day11.doc
+  day11.batch
   lwt_eio
-  eio_main)
+  eio_main
+  yojson)
  (preprocess
   (pps ppx_deriving_yojson ppx_deriving.std)))
