@@ -49,6 +49,11 @@ module Make_op (L : LABEL) = struct
     dispatch : Eio_unix.Stdenv.base -> Day11_opam_layer.Build.t -> bool;
     env : Eio_unix.Stdenv.base;
     pool : unit Current.Pool.t;
+    profile_name : string;
+      (* Tag job logs with the profile that scheduled the run. A
+         shared layer hash can be scheduled from more than one
+         profile; the last writer wins here, which is fine for
+         log-line attribution. *)
   }
 
   module Key = struct
@@ -82,12 +87,14 @@ module Make_op (L : LABEL) = struct
   let build (ctx : t) job (key : Key.t) =
     let open Lwt.Syntax in
     let* () = Current.Job.start job ~pool:ctx.pool ~level:Current.Level.Average in
+    Current.Job.log job "[profile %s] %s %s" ctx.profile_name
+      label (OpamPackage.to_string key.pkg);
     let layer = Day11_layer.Layer.of_hash ~os_dir:ctx.os_dir key.hash in
     Lwt_eio.run_eio @@ fun () ->
-    let cached_ok = match Day11_layer.Meta.load (Day11_layer.Layer.meta_path layer) with
+    let cached_ok = match Day11_layer.Meta.load ctx.env (Day11_layer.Layer.meta_path layer) with
       | Ok meta when meta.exit_status = 0 ->
         (* For doc layers, validate dep compile layers are present *)
-        if Day11_doc.Doc_build.validate_cached_doc
+        if Day11_doc.Doc_build.validate_cached_doc ctx.env
              ~os_dir:ctx.os_dir (Day11_layer.Layer.dir layer)
         then true
         else begin
@@ -103,6 +110,13 @@ module Make_op (L : LABEL) = struct
       | Error _ -> false
     in
     if cached_ok then begin
+      (* Hits are high-volume on large profiles — debug level keeps
+         the default log focused on genuine work. Bump via
+         [--verbosity debug] to see them. *)
+      Log.debug (fun f -> f "[%s] cache hit: %s %s %s"
+        ctx.profile_name label
+        (OpamPackage.to_string key.pkg)
+        (String.sub key.hash 0 (min 12 (String.length key.hash))));
       Current.Job.log job "Cached: %s %s" label
         (OpamPackage.to_string key.pkg);
       Ok Value.{
@@ -111,6 +125,10 @@ module Make_op (L : LABEL) = struct
         layer_dir = Fpath.to_string (Day11_layer.Layer.dir layer);
       }
     end else begin
+      Log.info (fun f -> f "[%s] cache miss: %s %s %s"
+        ctx.profile_name label
+        (OpamPackage.to_string key.pkg)
+        (String.sub key.hash 0 (min 12 (String.length key.hash))));
       Current.Job.log job "%s %s (%s)" label
         (OpamPackage.to_string key.pkg)
         (String.sub key.hash 0 (min 12 (String.length key.hash)));
@@ -119,7 +137,7 @@ module Make_op (L : LABEL) = struct
        | Ok contents -> Current.Job.write job contents
        | Error _ -> ());
       if success then begin
-        (match Day11_layer.Meta.load (Day11_layer.Layer.meta_path layer) with
+        (match Day11_layer.Meta.load ctx.env (Day11_layer.Layer.meta_path layer) with
          | Ok meta ->
            let tf name = Day11_layer.Meta.timing_field name meta.timing in
            Current.Job.log job "OK: %s %s (runc: %.1fs, disk: %dKB)"
@@ -160,10 +178,11 @@ module Cache_link    = Current_cache.Make (Op_link)
     [dag_node] is the original DAG node with full deps and universe.
     [dispatch] is called with the original node to execute it.
     [deps] are OCurrent dependencies that must complete first. *)
-let run_node ~env ~os_dir ~pool ~dispatch ~label
+let run_node ~env ~os_dir ~pool ~dispatch ~label ~profile_name
     ~(dag_node : Day11_opam_layer.Build.t) ~deps () : t Current.t =
   let open Current.Syntax in
-  Current.component "%s %s" label (OpamPackage.to_string dag_node.pkg)
+  Current.component "[%s] %s %s" profile_name label
+    (OpamPackage.to_string dag_node.pkg)
   |>
   let> deps in
   let all_dep_dirs =
@@ -180,31 +199,31 @@ let run_node ~env ~os_dir ~pool ~dispatch ~label
   let result =
     match label with
     | "build" ->
-      Cache_build.get { os_dir; dag_node; dispatch; env; pool }
+      Cache_build.get { os_dir; dag_node; dispatch; env; pool; profile_name }
         Op_build.Key.{ hash = dag_node.hash; pkg = dag_node.pkg }
       |> Current.Primitive.map_result
         (Result.map (fun v ->
           (v.Op_build.Value.hash, Fpath.v v.Op_build.Value.layer_dir)))
     | "tool" ->
-      Cache_tool.get { os_dir; dag_node; dispatch; env; pool }
+      Cache_tool.get { os_dir; dag_node; dispatch; env; pool; profile_name }
         Op_tool.Key.{ hash = dag_node.hash; pkg = dag_node.pkg }
       |> Current.Primitive.map_result
         (Result.map (fun v ->
           (v.Op_tool.Value.hash, Fpath.v v.Op_tool.Value.layer_dir)))
     | "compile" ->
-      Cache_compile.get { os_dir; dag_node; dispatch; env; pool }
+      Cache_compile.get { os_dir; dag_node; dispatch; env; pool; profile_name }
         Op_compile.Key.{ hash = dag_node.hash; pkg = dag_node.pkg }
       |> Current.Primitive.map_result
         (Result.map (fun v ->
           (v.Op_compile.Value.hash, Fpath.v v.Op_compile.Value.layer_dir)))
     | "doc" ->
-      Cache_doc.get { os_dir; dag_node; dispatch; env; pool }
+      Cache_doc.get { os_dir; dag_node; dispatch; env; pool; profile_name }
         Op_doc.Key.{ hash = dag_node.hash; pkg = dag_node.pkg }
       |> Current.Primitive.map_result
         (Result.map (fun v ->
           (v.Op_doc.Value.hash, Fpath.v v.Op_doc.Value.layer_dir)))
     | "link" ->
-      Cache_link.get { os_dir; dag_node; dispatch; env; pool }
+      Cache_link.get { os_dir; dag_node; dispatch; env; pool; profile_name }
         Op_link.Key.{ hash = dag_node.hash; pkg = dag_node.pkg }
       |> Current.Primitive.map_result
         (Result.map (fun v ->

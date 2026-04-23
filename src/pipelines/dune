@@ -8,6 +8,7 @@
   current_web
   lwt
   lwt.unix
+  day11.batch
   day11.lib
   day11.doc
   day11.opam-build
