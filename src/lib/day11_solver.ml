@@ -67,45 +67,29 @@ module SolveOp = struct
 
   (* Per-target solution cache.
 
-     Each [<pkg>.json] file wraps the solver output in an envelope
-     that embeds a [cache_key] = hash(compiler ∥ commit ∥
-     repos_digest). At load time we drop any file whose embedded key
-     doesn't match the current profile state, so a repo commit or
-     compiler change invalidates just those files — other cached
-     solutions stay valid.
+     Files live at [snapshot_dir/solutions/<pkg>.<ver>.json] and are
+     read/written via {!Day11_batch.Incremental_solver}. We embed a
+     [cache_key = hash(compiler ∥ commit ∥ repos_digest)] in each
+     entry so a repo or compiler change invalidates only the
+     affected entries — other cached solutions stay valid.
 
      This is deliberately per-file (not a directory-level
      fingerprint) so adding a new target to opam-repo doesn't nuke
      the cache for every existing target. Failed solves are simply
      absent on disk; they get re-attempted on the next run, which
-     is usually what we want. *)
+     is usually what we want.
+
+     {b Format compatibility:} the same files are read by the day11
+     CLI via {!Day11_batch.Incremental_solver.load}. day11 CLI
+     writes entries with [cache_key = None]; the load path here
+     accepts those (treats them as a cache hit) so command-line and
+     server-side runs share the cache without conflict. *)
   let solution_filename pkg =
     OpamPackage.to_string pkg ^ ".json"
 
   let compute_cache_key ~compiler_tag ~commit ~repos_digest =
     Digest.to_hex (Digest.string
       (compiler_tag ^ "|" ^ commit ^ "|" ^ repos_digest))
-
-  let wrap_solution ~cache_key result_json =
-    Yojson.Safe.to_string (`Assoc [
-      "cache_key", `String cache_key;
-      "result", result_json;
-    ])
-
-  (* Returns [Some result_json_string] if the on-disk file is an
-     envelope whose embedded [cache_key] matches. Any parse error,
-     missing key, or key mismatch returns [None] — caller treats
-     that as a cache miss for this target. *)
-  let unwrap_solution ~cache_key contents =
-    match Yojson.Safe.from_string contents with
-    | `Assoc fields ->
-      (match List.assoc_opt "cache_key" fields,
-             List.assoc_opt "result" fields with
-       | Some (`String k), Some result when k = cache_key ->
-         Some (Yojson.Safe.to_string result)
-       | _ -> None)
-    | _ -> None
-    | exception _ -> None
 
   (* Split [targets] into those whose cached solutions are still
      valid (matching [cache_key]) and those that need (re)solving. *)
@@ -115,18 +99,28 @@ module SolveOp = struct
     else
       List.fold_left (fun (cached, uncached) pkg ->
         let path = Fpath.(dir / solution_filename pkg) in
-        match Bos.OS.File.read path with
-        | Ok contents ->
-          (match unwrap_solution ~cache_key contents with
-           | Some result_json ->
+        match Day11_batch.Incremental_solver.load path with
+        | Ok entry
+          when Day11_batch.Incremental_solver.is_cache_key_valid
+                 ~expected:(Some cache_key) entry ->
+          (match entry with
+           | Cached_solution { result; _ } ->
+             let result_json =
+               Yojson.Safe.to_string
+                 (Day11_solution.Solve_result.to_json result) in
              (OpamPackage.to_string pkg, result_json) :: cached, uncached
-           | None -> cached, pkg :: uncached)
-        | Error _ -> cached, pkg :: uncached
+           | Cached_failure _ -> cached, pkg :: uncached)
+        | _ -> cached, pkg :: uncached
       ) ([], []) targets
 
-  let save_result ~dir ~cache_key pkg result_json =
+  let save_result ~dir ~cache_key pkg result =
     let path = Fpath.(dir / solution_filename pkg) in
-    ignore (Bos.OS.File.write path (wrap_solution ~cache_key result_json))
+    let entry = Day11_batch.Incremental_solver.Cached_solution {
+      package = pkg;
+      result;
+      cache_key = Some cache_key;
+    } in
+    ignore (Day11_batch.Incremental_solver.save path entry)
 
   let build (ctx : t) job (key : Key.t) =
     let open Lwt.Syntax in
@@ -165,8 +159,8 @@ module SolveOp = struct
       let new_pairs = List.filter_map (fun (pkg, result) ->
         match result with
         | Ok solve_result ->
+          save_result ~dir ~cache_key pkg solve_result;
           let result_json = Day11_solution.Solve_result.to_json solve_result in
-          save_result ~dir ~cache_key pkg result_json;
           Some (OpamPackage.to_string pkg, Yojson.Safe.to_string result_json)
         | Error _ -> None
       ) results in
