@@ -28,6 +28,9 @@ let routes ~(ctx : Pages.ctx) =
     (s "profiles" / str / s "p" / str / str /? nil) @-->
       (fun name pkg ver ->
         (Pages.package_version ~ctx:p name pkg ver :> Resource.t));
+    (s "profiles" / str / s "builds" / str / s "log" /? nil) @-->
+      (fun name hash ->
+        (Pages.build_log_view ~ctx:p name hash :> Resource.t));
     (s "profiles" / str / s "docs" /? wildcard) @-->
       (fun name parts ->
         let tail = Parts.wildcard_match parts in

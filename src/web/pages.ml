@@ -51,6 +51,37 @@ let snapshot_packages snapshot_dir =
   | Error _ -> []
   | Ok entries -> List.map Fpath.basename entries |> List.sort compare
 
+(** Latest status from [packages/<pkg>/history.jsonl] in a snapshot
+    dir, or [None] if the file is missing or empty. Reads the LAST
+    line of the file (the rolling history is append-only). *)
+let latest_pkg_status snapshot_dir pkg_str =
+  let h = Fpath.(snapshot_dir / "packages" / pkg_str / "history.jsonl") in
+  match Bos.OS.File.read_lines h with
+  | Error _ -> None
+  | Ok lines ->
+    let last = List.fold_left (fun _ l -> l) "" lines in
+    if last = "" then None
+    else
+      try
+        let json = Yojson.Safe.from_string last in
+        let open Yojson.Safe.Util in
+        Some (json |> member "status" |> to_string)
+      with _ -> None
+
+(** Find the snapshot key chronologically just before [current_key]
+    in this profile, by mtime. Returns [None] if [current_key] is the
+    oldest. Used for the "Diff against previous" button on
+    {!snapshot_detail}. *)
+let find_previous_snapshot_key ctx name current_key =
+  let snaps = list_snapshots_newest_first ctx name in
+  let keys = List.map Fpath.basename snaps in
+  let rec walk = function
+    | [] | [_] -> None
+    | k :: next :: _ when k = current_key -> Some next
+    | _ :: rest -> walk rest
+  in
+  walk keys
+
 (* ── /profiles ────────────────────────────────────────────────── *)
 
 let profiles_index ~ctx =
@@ -256,25 +287,51 @@ let snapshot_detail ~ctx name key =
           a ~a:[ a_href (Printf.sprintf "/profiles/%s/p/%s/%s" name n v) ]
             [ txt p ]
       in
-      let pkg_list = match pkgs with
+      let pkg_row p =
+        let status_cell = match latest_pkg_status snapshot_dir p with
+          | Some s -> Templates.status_span s
+          | None -> em [ txt "—" ]
+        in
+        tr [ td [ pkg_link p ]; td [ status_cell ] ]
+      in
+      let pkg_table = match pkgs with
         | [] -> p [ em [ txt "No packages tracked yet." ] ]
         | _ ->
-          ul (List.map (fun p -> li [ pkg_link p ])
-                (if pkg_count <= 200 then pkgs
-                 else List.filteri (fun i _ -> i < 200) pkgs
-                      @ [ Printf.sprintf
-                            "... (%d more, truncated)"
-                            (pkg_count - 200) ]))
+          let visible_pkgs =
+            if pkg_count <= 200 then pkgs
+            else List.filteri (fun i _ -> i < 200) pkgs in
+          let rows = List.map pkg_row visible_pkgs in
+          let trunc_row =
+            if pkg_count <= 200 then []
+            else [ tr [ td ~a:[ a_colspan 2 ]
+              [ em [ txt (Printf.sprintf "... (%d more, truncated)"
+                            (pkg_count - 200)) ] ] ] ]
+          in
+          table ~a:[ a_class [ "data" ] ]
+            ~thead:(thead [ tr [ th [ txt "Package" ];
+                                 th [ txt "Latest status" ] ] ])
+            (rows @ trunc_row)
+      in
+      let diff_link = match find_previous_snapshot_key ctx name key with
+        | None -> []
+        | Some prev ->
+          [ p [ a ~a:[ a_href (Printf.sprintf
+                                 "/profiles/%s/snapshots/%s/diff/%s"
+                                 name prev key) ]
+                  [ txt "Diff against previous snapshot ("
+                  ; Templates.sha_span prev
+                  ; txt ")" ] ] ]
       in
       Context.respond_ok web_ctx ([
         Templates.style_block; crumbs;
         h2 [ txt (name ^ " / "); Templates.sha_span key ];
+      ] @ diff_link @ [
         h3 [ txt "Repos at this snapshot" ];
         repos_table;
         h3 [ txt "Status totals" ];
       ] @ totals @ [
         h3 [ txt (Printf.sprintf "Packages (%d)" pkg_count) ];
-        pkg_list;
+        pkg_table;
       ])
   end
 
@@ -426,15 +483,25 @@ let package_version ~ctx name pkg ver =
         None, ver;
       ] in
       let history_rows = List.map (fun (e : Day11_lib.History.entry) ->
+        let hash_cell =
+          a ~a:[ a_href (Printf.sprintf
+                           "/profiles/%s/builds/%s/log" name e.build_hash) ]
+            [ Templates.sha_span e.build_hash ]
+        in
+        let error_cell = match e.error, e.failed_dep with
+          | Some err, _ -> [ code [ txt err ] ]
+          | None, Some dep ->
+            [ em [ txt "cascaded from " ];
+              code [ txt dep ] ]
+          | None, None -> []
+        in
         tr [ td [ txt e.ts ];
              td [ txt e.run ];
              td [ Templates.status_span e.status ];
              td [ txt e.category ];
-             td [ Templates.sha_span e.build_hash ];
+             td [ hash_cell ];
              td [ txt e.compiler ];
-             td (match e.error with
-                 | None -> []
-                 | Some err -> [ code [ txt err ] ]) ]
+             td error_cell ]
       ) entries in
       let history_block = match history_rows with
         | [] -> [ p [ em [ txt "No history entries." ] ] ]
@@ -461,4 +528,43 @@ let package_version ~ctx name pkg ver =
         p [ docs_link ];
         h3 [ txt "History" ];
       ] @ history_block)
+  end
+
+(* ── /profiles/<name>/builds/<hash>/log ──────────────────────── *)
+
+(** Read [layer.log] for a build hash and serve it as text/plain.
+    The hash points into the per-arch cache dir (derived from the
+    profile's [os_dir_name]). Layer dirs use the first 12 chars of
+    the full hash as the directory name; we accept either. Used as
+    the link target from the [build_hash] cell of the package
+    history table — the answer to "why did this build fail?". *)
+let build_log_view ~ctx name hash =
+  object
+    inherit Resource.t
+    val! can_get = `Viewer
+    method! private get web_ctx =
+      let open Lwt.Syntax in
+      let* response =
+        match Profile.load ~dir:ctx.profile_dir ~name with
+        | Error (`Msg e) ->
+          Context.respond_error web_ctx
+            `Not_found (Printf.sprintf "no such profile: %s (%s)" name e)
+        | Ok profile ->
+          let os_dir = Profile.os_dir_name profile in
+          let short = if String.length hash <= 12 then hash
+                      else String.sub hash 0 12 in
+          let log_path = Fpath.(ctx.cache_dir / os_dir / short / "layer.log") in
+          (match Bos.OS.File.read log_path with
+           | Error _ ->
+             Context.respond_error web_ctx
+               `Not_found (Printf.sprintf
+                  "no log for build %s (looked at %s)"
+                  short (Fpath.to_string log_path))
+           | Ok body ->
+             let headers = Cohttp.Header.init_with "Content-Type"
+               "text/plain; charset=utf-8" in
+             Cohttp_lwt_unix.Server.respond_string
+               ~headers ~status:`OK ~body ())
+      in
+      Lwt.return response
   end
