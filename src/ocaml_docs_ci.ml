@@ -129,10 +129,14 @@ let main () current_config github_auth mode profiles_arg profile_dir_arg
   let secure_cookies = github_auth <> None in
   let authn = Option.map Current_github.Auth.make_login_uri github_auth in
   let site =
+    let dashboard_routes =
+      Docs_ci_web.Web_routes.routes
+        ~ctx:{ profile_dir; cache_dir } in
     let routes =
       Routes.[
         (s "login" /? nil) @--> Current_github.Auth.login github_auth;
       ]
+      @ dashboard_routes
       @ Current_web.routes engine
     in
     Current_web.Site.(v ?authn ~has_role ~secure_cookies)
