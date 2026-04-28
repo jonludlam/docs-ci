@@ -218,7 +218,7 @@ let v_for_profile ~config ~eio_env ~cache_dir:_ ?cpu_slots
   Day11_lib.Run_log.set_log_base_dir (Fpath.to_string snapshot_dir);
   let run_log = Day11_lib.Run_log.start_run () in
   let recorder = Day11_batch.Recorder.create
-    ~env ~benv ~os_dir:ctx.os_dir ~packages_dir
+    ~env ~os_dir:ctx.os_dir ~packages_dir
     ~blessing_maps ~run_log in
   let on_pkg_complete node ~success =
     Day11_batch.Recorder.record_build recorder node ~success in
