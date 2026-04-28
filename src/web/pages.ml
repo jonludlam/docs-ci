@@ -27,6 +27,37 @@ type ctx = {
 let snapshots_base ctx name =
   Fpath.(parent ctx.cache_dir / "snapshots" / name)
 
+(** Look up the OCurrent job_id for a given build_hash by querying the
+    Current_cache sqlite db. Returns the most recent job_id (highest
+    finished timestamp) or [None] if not cached. Accepts either the
+    short (12-char) form or the full 32-char hash — we match on the
+    [substr(key,1,N)] prefix for whichever length we got. *)
+let job_id_for_hash hash =
+  let n = min 12 (String.length hash) in
+  let prefix = String.sub hash 0 n in
+  let db_path = "/home/jjl25/ocaml-docs-ci-oi-sharing/var/db/sqlite.db" in
+  if not (Sys.file_exists db_path) then None
+  else
+    try
+      let db = Sqlite3.db_open ~mode:`READONLY db_path in
+      let stmt = Sqlite3.prepare db
+        "SELECT job_id FROM cache \
+         WHERE substr(key,1,?) = ? AND op LIKE 'day11-%' \
+         ORDER BY finished DESC LIMIT 1" in
+      let _ = Sqlite3.bind_int stmt 1 n in
+      let _ = Sqlite3.bind_blob stmt 2 prefix in
+      let result = ref None in
+      (match Sqlite3.step stmt with
+       | Sqlite3.Rc.ROW ->
+         (match Sqlite3.column stmt 0 with
+          | Sqlite3.Data.TEXT s -> result := Some s
+          | _ -> ())
+       | _ -> ());
+      ignore (Sqlite3.finalize stmt);
+      ignore (Sqlite3.db_close db);
+      !result
+    with _ -> None
+
 (** List a profile's snapshots, newest first by mtime. *)
 let list_snapshots_newest_first ctx name =
   let base = snapshots_base ctx name in
@@ -66,6 +97,28 @@ let latest_pkg_status snapshot_dir pkg_str =
         let json = Yojson.Safe.from_string last in
         let open Yojson.Safe.Util in
         Some (json |> member "status" |> to_string)
+      with _ -> None
+
+(** Latest [(status, category, build_hash)] for a package, or [None]. *)
+let latest_pkg_status_full snapshot_dir pkg_str =
+  let h = Fpath.(snapshot_dir / "packages" / pkg_str / "history.jsonl") in
+  match Bos.OS.File.read_lines h with
+  | Error _ -> None
+  | Ok lines ->
+    let last = List.fold_left (fun _ l -> l) "" lines in
+    if last = "" then None
+    else
+      try
+        let json = Yojson.Safe.from_string last in
+        let open Yojson.Safe.Util in
+        let status = json |> member "status" |> to_string in
+        let category =
+          try json |> member "category" |> to_string
+          with _ -> status in
+        let build_hash =
+          try json |> member "build_hash" |> to_string
+          with _ -> "" in
+        Some (status, category, build_hash)
       with _ -> None
 
 (** Find the snapshot key chronologically just before [current_key]
@@ -266,16 +319,43 @@ let snapshot_detail ~ctx name key =
                                   this snapshot — run is in \
                                   progress or pre-finish." ] ] ]
         | Some st ->
-          let tot label rows =
+          let is_doc_cat c =
+            c = "doc_success" || c = "doc_failure"
+          in
+          let partition rows =
+            List.partition (fun (c, _) -> is_doc_cat c) rows
+          in
+          let build_blessed = snd (partition st.blessed_totals) in
+          let doc_blessed = fst (partition st.blessed_totals) in
+          let build_nonblessed = snd (partition st.non_blessed_totals) in
+          let doc_nonblessed = fst (partition st.non_blessed_totals) in
+          let breakdown_row label rows =
+            let parts = List.map
+              (fun (cat, n) -> Printf.sprintf "%s=%d" cat n) rows in
             let total = List.fold_left (fun acc (_, n) -> acc + n) 0 rows in
-            tr [ th [ txt label ]; td [ txt (string_of_int total) ] ]
+            let txt_str = match parts with
+              | [] -> "0"
+              | _ -> Printf.sprintf "%d (%s)" total
+                       (String.concat ", " parts) in
+            tr [ th [ txt label ]; td [ txt txt_str ] ]
           in
           [ table ~a:[ a_class [ "data" ] ]
-              [ tot "Blessed total" st.blessed_totals;
-                tot "Non-blessed total" st.non_blessed_totals ] ]
+              [ breakdown_row "Blessed builds" build_blessed;
+                breakdown_row "Non-blessed builds" build_nonblessed;
+                breakdown_row "Blessed docs" doc_blessed;
+                breakdown_row "Non-blessed docs" doc_nonblessed ];
+            p ~a:[ a_class [ "crumbs" ] ]
+              [ em [ txt "Builds count compiled package layers; docs \
+                          count successful compile+link (or doc-all) \
+                          stages. Counts are per build_hash (a package \
+                          solved in N universes counts as N). 'Blessed' \
+                          means the entry is the chosen primary \
+                          universe per package AND the entry was \
+                          written in the current run — i.e. it's still \
+                          live. Older blessed entries superseded by a \
+                          re-solve count as non-blessed." ] ] ]
       in
       let pkgs = snapshot_packages snapshot_dir in
-      let pkg_count = List.length pkgs in
       let pkg_link p =
         match String.index_opt p '.' with
         | None ->
@@ -287,31 +367,10 @@ let snapshot_detail ~ctx name key =
           a ~a:[ a_href (Printf.sprintf "/profiles/%s/p/%s/%s" name n v) ]
             [ txt p ]
       in
-      let pkg_row p =
-        let status_cell = match latest_pkg_status snapshot_dir p with
-          | Some s -> Templates.status_span s
-          | None -> em [ txt "—" ]
-        in
-        tr [ td [ pkg_link p ]; td [ status_cell ] ]
-      in
-      let pkg_table = match pkgs with
-        | [] -> p [ em [ txt "No packages tracked yet." ] ]
-        | _ ->
-          let visible_pkgs =
-            if pkg_count <= 200 then pkgs
-            else List.filteri (fun i _ -> i < 200) pkgs in
-          let rows = List.map pkg_row visible_pkgs in
-          let trunc_row =
-            if pkg_count <= 200 then []
-            else [ tr [ td ~a:[ a_colspan 2 ]
-              [ em [ txt (Printf.sprintf "... (%d more, truncated)"
-                            (pkg_count - 200)) ] ] ] ]
-          in
-          table ~a:[ a_class [ "data" ] ]
-            ~thead:(thead [ tr [ th [ txt "Package" ];
-                                 th [ txt "Latest status" ] ] ])
-            (rows @ trunc_row)
-      in
+      (* pkg_table is rendered after [dag_data] is available so we
+         can list every package from dag.json (not just those with
+         per-snapshot history). See further down. *)
+      let _ = pkgs in
       let diff_link = match find_previous_snapshot_key ctx name key with
         | None -> []
         | Some prev ->
@@ -322,10 +381,274 @@ let snapshot_detail ~ctx name key =
                   ; Templates.sha_span prev
                   ; txt ")" ] ] ]
       in
+      let kind_label : Day11_lib.Dag_marshal.kind -> string = function
+        | Build -> "build" | Tool -> "tool" | Compile -> "compile"
+        | Doc_all -> "doc-all" | Link -> "link"
+      in
+      (* Read dag.json + classify once. Drives Failures list, DAG
+         overview, and cascade breakdown — all want the same view. *)
+      let dag_data =
+        match Day11_lib.Dag_marshal.read ~snapshot_dir with
+        | Error _ -> None
+        | Ok entries ->
+          let os_dir =
+            match Profile.load ~dir:ctx.profile_dir ~name with
+            | Ok profile ->
+              Some Fpath.(ctx.cache_dir / Profile.os_dir_name profile)
+            | Error _ -> None
+          in
+          let cascade_table = match os_dir with
+            | Some d ->
+              Day11_lib.Cascade.classify_from_layers ~os_dir:d entries
+            | None ->
+              let packages_dir = Fpath.(snapshot_dir / "packages") in
+              Day11_lib.Cascade.classify ~packages_dir entries
+          in
+          Some (entries, cascade_table)
+      in
+      (* Surface failed nodes prominently. Driven by cascade_table when
+         dag.json is present (comprehensive: includes failures cached
+         from previous snapshots that didn't re-dispatch); falls back
+         to per-snapshot history for older snapshots without dag.json. *)
+      let failures_section =
+        match dag_data with
+        | Some (entries, cascade_table) ->
+          let failed = List.filter_map (fun (e : Day11_lib.Dag_marshal.entry) ->
+            match Hashtbl.find_opt cascade_table e.hash with
+            | Some { Day11_lib.Cascade.status = Failed; _ } -> Some e
+            | _ -> None) entries
+          in
+          (match failed with
+           | [] -> [ p [ em [ txt "No failed nodes 🎉" ] ] ]
+           | _ ->
+             let by_kind = List.fold_left (fun acc (e : Day11_lib.Dag_marshal.entry) ->
+               let k = kind_label e.kind in
+               let n = try List.assoc k acc with Not_found -> 0 in
+               (k, n + 1) :: List.filter (fun (kk, _) -> kk <> k) acc) [] failed in
+             let by_kind = List.sort (fun (_, a) (_, b) -> compare b a) by_kind in
+             let summary = String.concat ", " (List.map
+               (fun (k, n) -> Printf.sprintf "%s=%d" k n) by_kind) in
+             let sorted = List.sort (fun (a : Day11_lib.Dag_marshal.entry) b ->
+               compare (OpamPackage.to_string a.pkg)
+                       (OpamPackage.to_string b.pkg)) failed in
+             let row (e : Day11_lib.Dag_marshal.entry) =
+               let pkg_cell = pkg_link (OpamPackage.to_string e.pkg) in
+               let log_target = match job_id_for_hash e.hash with
+                 | Some job_id -> "/job/" ^ job_id
+                 | None ->
+                   Printf.sprintf "/profiles/%s/builds/%s/log" name e.hash
+               in
+               tr [ td [ pkg_cell ];
+                    td [ txt (kind_label e.kind) ];
+                    td [ Templates.sha_span e.hash ];
+                    td [ a ~a:[ a_href log_target ] [ txt "log" ] ] ]
+             in
+             [ p [ txt (Printf.sprintf "%d failed (%s)"
+                          (List.length failed) summary) ];
+               table ~a:[ a_class [ "data" ] ]
+                 ~thead:(thead [ tr [ th [ txt "Package" ];
+                                      th [ txt "Kind" ];
+                                      th [ txt "Hash" ];
+                                      th [ txt "Log" ] ] ])
+                 (List.map row sorted) ])
+        | None ->
+          (* Fallback: legacy per-snapshot history view. *)
+          let failures, with_history =
+            List.fold_left (fun (fs, wh) pkg_str ->
+              match latest_pkg_status_full snapshot_dir pkg_str with
+              | Some (status, _, _) when status = "success" -> (fs, wh + 1)
+              | Some (status, category, build_hash) ->
+                ((pkg_str, status, category, build_hash) :: fs, wh + 1)
+              | None -> (fs, wh)) ([], 0) pkgs
+          in
+          let failures = List.rev failures in
+          let total_pkgs = List.length pkgs in
+          let no_history = total_pkgs - with_history in
+          (match failures with
+           | [] when no_history > 0 ->
+             [ p [ em [ txt (Printf.sprintf
+               "No dag.json and no history yet (%d/%d packages)."
+               no_history total_pkgs) ] ] ]
+           | [] -> [ p [ em [ txt "No failed packages 🎉" ] ] ]
+           | _ ->
+             let row (pkg_str, status, category, _build_hash) =
+               tr [ td [ pkg_link pkg_str ];
+                    td [ Templates.status_span status ];
+                    td [ txt category ] ]
+             in
+             [ table ~a:[ a_class [ "data" ] ]
+                 ~thead:(thead [ tr [ th [ txt "Package" ];
+                                      th [ txt "Status" ];
+                                      th [ txt "Category" ] ] ])
+                 (List.map row failures) ])
+      in
+      (* Comprehensive DAG overview from on-disk layer state, plus a
+         per-cascade breakdown when there's something to show. Both
+         derived from one [Cascade.classify_from_layers] pass over
+         dag.json + [<os_dir>/layer_status.jsonl]. *)
+      let overview_section, cascade_section =
+        match dag_data with
+        | None -> [], []
+        | Some (entries, cascade_table) ->
+          let bucket_for : Day11_lib.Cascade.status -> string = function
+            | Ok -> "ok" | Failed -> "failed"
+            | Cascade _ -> "cascade" | Pending -> "pending"
+          in
+          let counts : (string * string, int) Hashtbl.t =
+            Hashtbl.create 32 in
+          List.iter (fun (e : Day11_lib.Dag_marshal.entry) ->
+            match Hashtbl.find_opt cascade_table e.hash with
+            | None -> ()
+            | Some r ->
+              let k = (kind_label e.kind, bucket_for r.status) in
+              let n = try Hashtbl.find counts k with Not_found -> 0 in
+              Hashtbl.replace counts k (n + 1)
+          ) entries;
+          let kinds = ["build"; "tool"; "compile"; "doc-all"; "link"] in
+          let buckets = ["ok"; "failed"; "cascade"; "pending"] in
+          let overview_rows = List.map (fun k ->
+            let cells = List.map (fun b ->
+              let n = try Hashtbl.find counts (k, b) with Not_found -> 0 in
+              td [ txt (string_of_int n) ]) buckets in
+            tr (th [ txt k ] :: cells)) kinds
+          in
+          let overview =
+            [ h3 [ txt "DAG state" ];
+              p [ em [ txt "Every planned node classified by on-disk \
+                            layer status. Cascade = dispatch skipped \
+                            because a dep failed." ] ];
+              table ~a:[ a_class [ "data" ] ]
+                ~thead:(thead [ tr (th [ txt "Kind" ] ::
+                  List.map (fun b -> th [ txt b ]) buckets) ])
+                overview_rows ]
+          in
+          let by_hash : (string, Day11_lib.Dag_marshal.entry) Hashtbl.t =
+            Hashtbl.create (List.length entries) in
+          List.iter (fun (e : Day11_lib.Dag_marshal.entry) ->
+            Hashtbl.replace by_hash e.hash e) entries;
+          let cascaded =
+            List.filter_map (fun (e : Day11_lib.Dag_marshal.entry) ->
+              match Hashtbl.find_opt cascade_table e.hash with
+              | Some { Day11_lib.Cascade.status = Cascade src; _ } ->
+                Some (e, src)
+              | _ -> None
+            ) entries
+          in
+          let cascade =
+            if cascaded = [] then []
+            else begin
+              let row ((e : Day11_lib.Dag_marshal.entry), src) =
+                let src_e = Hashtbl.find by_hash src in
+                tr [ td [ pkg_link (OpamPackage.to_string e.pkg) ];
+                     td [ txt (kind_label e.kind) ];
+                     td [ pkg_link (OpamPackage.to_string src_e.pkg) ];
+                     td [ txt (kind_label src_e.kind) ] ]
+              in
+              let by_root = Hashtbl.create 16 in
+              List.iter (fun (e, src) ->
+                let prev = try Hashtbl.find by_root src
+                  with Not_found -> [] in
+                Hashtbl.replace by_root src ((e, src) :: prev)
+              ) cascaded;
+              let groups = Hashtbl.fold (fun root rs acc ->
+                (root, rs) :: acc) by_root [] in
+              let groups = List.sort (fun (_, a) (_, b) ->
+                compare (List.length b) (List.length a)) groups in
+              let rows = List.concat_map (fun (_, rs) ->
+                let sorted = List.sort
+                  (fun ((a : Day11_lib.Dag_marshal.entry), _)
+                       ((b : Day11_lib.Dag_marshal.entry), _) ->
+                    compare (OpamPackage.to_string a.pkg)
+                            (OpamPackage.to_string b.pkg))
+                  rs in
+                List.map row sorted) groups
+              in
+              [ h3 [ txt (Printf.sprintf "Cascaded (%d)"
+                            (List.length cascaded)) ];
+                p [ em [ txt "Nodes that didn't run because an upstream \
+                              node failed." ] ];
+                table ~a:[ a_class [ "data" ] ]
+                  ~thead:(thead [ tr [ th [ txt "Package" ];
+                                       th [ txt "Kind" ];
+                                       th [ txt "Blocked by" ];
+                                       th [ txt "Kind" ] ] ])
+                  rows ]
+            end
+          in
+          overview, cascade
+      in
+      (* Build pkg_table from dag.json (every planned package, sorted)
+         with status from cascade_table. Falls back to the legacy
+         per-snapshot list when dag.json is missing. *)
+      let pkg_count, pkg_table =
+        match dag_data with
+        | Some (entries, cascade_table) ->
+          let by_name :
+            (string, Day11_lib.Cascade.status list) Hashtbl.t =
+            Hashtbl.create 4096 in
+          List.iter (fun (e : Day11_lib.Dag_marshal.entry) ->
+            match e.kind with
+            | Build ->
+              let name = OpamPackage.to_string e.pkg in
+              let prev = try Hashtbl.find by_name name
+                with Not_found -> [] in
+              let st = match Hashtbl.find_opt cascade_table e.hash with
+                | Some r -> r.status
+                | None -> Day11_lib.Cascade.Pending
+              in
+              Hashtbl.replace by_name name (st :: prev)
+            | _ -> ()
+          ) entries;
+          let aggregate sts =
+            (* Worst-of (Failed > Cascade > Pending > Ok) — surfaces
+               problems on packages with multiple universes. *)
+            if List.exists (fun s -> s = Day11_lib.Cascade.Failed) sts
+            then "failed"
+            else if List.exists (function
+                | Day11_lib.Cascade.Cascade _ -> true | _ -> false) sts
+            then "cascade"
+            else if List.exists (fun s -> s = Day11_lib.Cascade.Pending) sts
+            then "pending"
+            else "ok"
+          in
+          let names = Hashtbl.fold (fun n _ acc -> n :: acc) by_name [] in
+          let names = List.sort compare names in
+          let row name =
+            let sts = Hashtbl.find by_name name in
+            tr [ td [ pkg_link name ];
+                 td [ Templates.status_span (aggregate sts) ] ]
+          in
+          (List.length names,
+           table ~a:[ a_class [ "data" ] ]
+             ~thead:(thead [ tr [ th [ txt "Package" ];
+                                  th [ txt "Status" ] ] ])
+             (List.map row names))
+        | None ->
+          let pkg_row p =
+            let status_cell = match latest_pkg_status snapshot_dir p with
+              | Some s -> Templates.status_span s
+              | None -> em [ txt "—" ]
+            in
+            tr [ td [ pkg_link p ]; td [ status_cell ] ]
+          in
+          (List.length pkgs,
+           match pkgs with
+           | [] -> p [ em [ txt "No packages tracked yet." ] ]
+           | _ ->
+             table ~a:[ a_class [ "data" ] ]
+               ~thead:(thead [ tr [ th [ txt "Package" ];
+                                    th [ txt "Status" ] ] ])
+               (List.map pkg_row pkgs))
+      in
       Context.respond_ok web_ctx ([
         Templates.style_block; crumbs;
         h2 [ txt (name ^ " / "); Templates.sha_span key ];
-      ] @ diff_link @ [
+      ] @ diff_link
+        @ overview_section
+        @ [ h3 [ txt "Failures" ] ]
+        @ failures_section
+        @ cascade_section
+        @ [
         h3 [ txt "Repos at this snapshot" ];
         repos_table;
         h3 [ txt "Status totals" ];
@@ -337,9 +660,12 @@ let snapshot_detail ~ctx name key =
 
 (* ── /profiles/<name>/snapshots/<key>/diff/<other> ────────────── *)
 
-(* Mirrors [day11 diff]'s logic in cmd_diff: read both snapshots'
-   per-package latest history entries and compute version changes /
-   added / removed / fixed / regressed. *)
+(* Diff two snapshots' on-disk package state. Keyed by
+   [(name, version)] so that two versions of the same package
+   (e.g. [astring.0.8.3] AND [astring.0.8.5] both present in the
+   newer snapshot) each get their own row instead of collapsing
+   together. The previous version of this code keyed by name only
+   and silently lost the second-version-onwards. *)
 let snapshot_diff ~ctx name key_old key_new =
   object
     inherit Resource.t
@@ -347,22 +673,66 @@ let snapshot_diff ~ctx name key_old key_new =
     method! private get web_ctx =
       let dir_old = Fpath.(snapshots_base ctx name / key_old) in
       let dir_new = Fpath.(snapshots_base ctx name / key_new) in
+      let split_pkg pkg_str =
+        match String.index_opt pkg_str '.' with
+        | None -> None
+        | Some i ->
+          let n = String.sub pkg_str 0 i in
+          let v = String.sub pkg_str (i + 1) (String.length pkg_str - i - 1) in
+          Some (n, v)
+      in
+      let os_dir =
+        match Profile.load ~dir:ctx.profile_dir ~name with
+        | Ok profile ->
+          Some Fpath.(ctx.cache_dir / Profile.os_dir_name profile)
+        | Error _ -> None
+      in
+      (* Per-snapshot [(name, version) → status]. Sources from
+         dag.json + layer state so cached nodes still appear (the
+         legacy [packages/] dir is only the dispatched-this-run
+         subset). Falls back to history when dag.json is missing. *)
+      let aggregate (sts : Day11_lib.Cascade.status list) =
+        if List.exists (fun s -> s = Day11_lib.Cascade.Failed) sts
+        then "failure"
+        else if List.exists (function
+            | Day11_lib.Cascade.Cascade _ -> true | _ -> false) sts
+        then "cascade"
+        else if List.exists (fun s -> s = Day11_lib.Cascade.Pending) sts
+        then "pending"
+        else "success"
+      in
       let load_pkgs dir =
-        snapshot_packages dir
-        |> List.fold_left (fun m pkg ->
-          let entries = Day11_lib.History.read
-            ~packages_dir:Fpath.(dir / "packages") ~pkg_str:pkg in
-          match entries with
-          | [] -> m
-          | latest :: _ ->
-            (* Strip [.version] to get the bare name → version map. *)
-            (match String.index_opt pkg '.' with
-             | None -> m
-             | Some i ->
-               let n = String.sub pkg 0 i in
-               let v = String.sub pkg (i + 1) (String.length pkg - i - 1) in
-               (n, (v, latest.status)) :: m)
-        ) []
+        match Day11_lib.Dag_marshal.read ~snapshot_dir:dir, os_dir with
+        | Ok entries, Some od ->
+          let table = Day11_lib.Cascade.classify_from_layers
+            ~os_dir:od entries in
+          let by_pkg : (string * string, Day11_lib.Cascade.status list)
+            Hashtbl.t = Hashtbl.create 4096 in
+          List.iter (fun (e : Day11_lib.Dag_marshal.entry) ->
+            match e.kind, split_pkg (OpamPackage.to_string e.pkg) with
+            | Build, Some (n, v) ->
+              let st = match Hashtbl.find_opt table e.hash with
+                | Some r -> r.status
+                | None -> Day11_lib.Cascade.Pending
+              in
+              let prev = try Hashtbl.find by_pkg (n, v)
+                with Not_found -> [] in
+              Hashtbl.replace by_pkg (n, v) (st :: prev)
+            | _ -> ()
+          ) entries;
+          Hashtbl.fold (fun key sts acc -> (key, aggregate sts) :: acc)
+            by_pkg []
+        | _ ->
+          (* Legacy fallback. *)
+          snapshot_packages dir
+          |> List.fold_left (fun m pkg ->
+            let entries = Day11_lib.History.read
+              ~packages_dir:Fpath.(dir / "packages") ~pkg_str:pkg in
+            match entries, split_pkg pkg with
+            | latest :: _, Some (n, v) ->
+              ((n, v), latest.status) :: m
+            | _ -> m
+          ) []
       in
       let m_old = load_pkgs dir_old in
       let m_new = load_pkgs dir_new in
@@ -375,38 +745,86 @@ let snapshot_diff ~ctx name key_old key_new =
         None, "diff " ^ Templates.short_sha key_new;
       ] in
       let rows =
-        let names = List.sort_uniq compare
+        let keys = List.sort_uniq compare
           (List.map fst m_old @ List.map fst m_new) in
-        List.filter_map (fun n ->
-          let v_old = List.assoc_opt n m_old in
-          let v_new = List.assoc_opt n m_new in
-          match v_old, v_new with
-          | None, None -> None
-          | None, Some (vn, sn) ->
-            Some (tr [ td [ txt n ]; td [ txt "—" ];
-                       td [ txt vn ]; td [ Templates.status_span sn ];
+        (* First pass: classify each (name, version) into one of four
+           buckets and collect per-name counts so we can collapse
+           "removed X + added Y" into a single "changed" row when a
+           package name has exactly one of each (typical for latest-only
+           profiles where a version bump replaces the prior version). *)
+        let classify =
+          List.filter_map (fun (n, v) ->
+            let s_old = List.assoc_opt (n, v) m_old in
+            let s_new = List.assoc_opt (n, v) m_new in
+            match s_old, s_new with
+            | None, None -> None
+            | None, Some sn -> Some (n, `Added (v, sn))
+            | Some _, None -> Some (n, `Removed v)
+            | Some so, Some sn when so = sn -> None
+            | Some so, Some sn -> Some (n, `StatusChanged (v, so, sn))
+          ) keys
+        in
+        let counts : (string, int ref * int ref) Hashtbl.t =
+          Hashtbl.create 16 in
+        List.iter (fun (n, k) ->
+          let r, a = try Hashtbl.find counts n
+            with Not_found ->
+              let cell = (ref 0, ref 0) in
+              Hashtbl.add counts n cell;
+              cell
+          in
+          match k with
+          | `Removed _ -> incr r
+          | `Added _ -> incr a
+          | `StatusChanged _ -> ()
+        ) classify;
+        (* Pair up removed+added for names with exactly 1 of each. *)
+        let paired : (string, string * string * string) Hashtbl.t =
+          Hashtbl.create 16 in
+        List.iter (fun (n, k) ->
+          match Hashtbl.find_opt counts n with
+          | Some (r, a) when !r = 1 && !a = 1 ->
+            let existing = Hashtbl.find_opt paired n in
+            (match k, existing with
+             | `Removed v_old, None ->
+               Hashtbl.add paired n (v_old, "", "")
+             | `Removed v_old, Some (_, v_new, s_new) ->
+               Hashtbl.replace paired n (v_old, v_new, s_new)
+             | `Added (v_new, s_new), None ->
+               Hashtbl.add paired n ("", v_new, s_new)
+             | `Added (v_new, s_new), Some (v_old, _, _) ->
+               Hashtbl.replace paired n (v_old, v_new, s_new)
+             | _ -> ())
+          | _ -> ()
+        ) classify;
+        List.filter_map (fun (n, k) ->
+          match k, Hashtbl.find_opt paired n with
+          | `Removed _, Some _ -> None  (* collapsed into the added row *)
+          | `Added (_, _), Some (v_old, v_new, s_new)
+            when v_old <> "" && v_new <> "" ->
+            Some (tr [ td [ txt n ];
+                       td [ txt (v_old ^ " → " ^ v_new) ];
+                       td [ Templates.status_span s_new ];
+                       td [ em [ txt "version changed" ] ] ])
+          | `Added (v, sn), _ ->
+            Some (tr [ td [ txt n ]; td [ txt v ];
+                       td [ Templates.status_span sn ];
                        td [ em [ txt "added" ] ] ])
-          | Some (vo, _), None ->
-            Some (tr [ td [ txt n ]; td [ txt vo ]; td [ txt "—" ];
+          | `Removed v, _ ->
+            Some (tr [ td [ txt n ]; td [ txt v ];
                        td []; td [ em [ txt "removed" ] ] ])
-          | Some (vo, so), Some (vn, sn) when vo = vn && so = sn -> None
-          | Some (vo, so), Some (vn, sn) ->
-            let kind =
-              if vo <> vn then Printf.sprintf "version: %s → %s" vo vn
-              else "status changed"
-            in
-            Some (tr [ td [ txt n ]; td [ txt vo ]; td [ txt vn ];
+          | `StatusChanged (v, so, sn), _ ->
+            Some (tr [ td [ txt n ]; td [ txt v ];
                        td [ Templates.status_span so; txt " → ";
                             Templates.status_span sn ];
-                       td [ em [ txt kind ] ] ])
-        ) names
+                       td [ em [ txt "status changed" ] ] ])
+        ) classify
       in
       let body =
         if rows = [] then [ p [ em [ txt "No differences." ] ] ]
         else [ table ~a:[ a_class [ "data" ] ]
                  ~thead:(thead [ tr [ th [ txt "Package" ];
-                                      th [ txt "Old version" ];
-                                      th [ txt "New version" ];
+                                      th [ txt "Version" ];
                                       th [ txt "Status" ];
                                       th [ txt "Change" ] ] ])
                  rows ]
@@ -483,24 +901,28 @@ let package_version ~ctx name pkg ver =
         None, ver;
       ] in
       let history_rows = List.map (fun (e : Day11_lib.History.entry) ->
+        (* Prefer linking to the OCurrent job page (gives a Rebuild
+           button and structured log) when we can find it; fall back
+           to the raw layer.log file when the cache no longer has the
+           job_id (e.g. for entries pre-dating the SQLite cache). *)
         let hash_cell =
-          a ~a:[ a_href (Printf.sprintf
-                           "/profiles/%s/builds/%s/log" name e.build_hash) ]
-            [ Templates.sha_span e.build_hash ]
+          let target = match job_id_for_hash e.build_hash with
+            | Some job_id -> "/job/" ^ job_id
+            | None ->
+              Printf.sprintf "/profiles/%s/builds/%s/log"
+                name e.build_hash
+          in
+          a ~a:[ a_href target ] [ Templates.sha_span e.build_hash ]
         in
-        let error_cell = match e.error, e.failed_dep with
-          | Some err, _ -> [ code [ txt err ] ]
-          | None, Some dep ->
-            [ em [ txt "cascaded from " ];
-              code [ txt dep ] ]
-          | None, None -> []
+        let error_cell = match e.error with
+          | Some err -> [ code [ txt err ] ]
+          | None -> []
         in
         tr [ td [ txt e.ts ];
              td [ txt e.run ];
              td [ Templates.status_span e.status ];
              td [ txt e.category ];
              td [ hash_cell ];
-             td [ txt e.compiler ];
              td error_cell ]
       ) entries in
       let history_block = match history_rows with
@@ -512,7 +934,6 @@ let package_version ~ctx name pkg ver =
                                    th [ txt "Status" ];
                                    th [ txt "Category" ];
                                    th [ txt "Hash" ];
-                                   th [ txt "Compiler" ];
                                    th [ txt "Error" ] ] ])
               history_rows ]
       in
