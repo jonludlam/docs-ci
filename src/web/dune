@@ -12,5 +12,6 @@
   fpath
   lwt
   routes
+  sqlite3
   tyxml
   yojson))

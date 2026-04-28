@@ -92,6 +92,12 @@ module Track = struct
     let result =
       Bos.OS.Dir.contents Fpath.(dir / "packages") >>| fun packages ->
       packages
+      (* Skip non-directory entries. Some repos keep a README.md
+         directly under [packages/] (e.g. local overlays), which
+         isn't a package and would crash [get_versions] when it
+         tries to list versions beneath it. *)
+      |> List.filter (fun p ->
+           match Bos.OS.Dir.exists p with Ok true -> true | _ -> false)
       |> List.filter filter
       |> Lwt_list.map_s (get_versions ~limit)
       |> Lwt.map (fun v -> List.flatten v)

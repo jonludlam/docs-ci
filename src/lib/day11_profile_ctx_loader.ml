@@ -114,22 +114,45 @@ end
 
 module Cache = Current_cache.Make (Op)
 
+(** Read the on-disk HEAD of a local git repo as a one-shot
+    [Current_git.Commit.t Current.t]. Used as the fallback when an
+    entry has no remote-pull job to drive it (e.g. read-only
+    overlays maintained outside the daemon). The commit is captured
+    once at pipeline-construction time and never changes — manual
+    edits to the repo will require a daemon restart, which is the
+    correct trade-off for a static overlay. *)
+let one_shot_head_commit (path : Fpath.t) : Current_git.Commit.t Current.t =
+  let p = Fpath.to_string path in
+  let cmd = Printf.sprintf
+    "git -C %s rev-parse HEAD" (Filename.quote p) in
+  let ic = Unix.open_process_in cmd in
+  let sha =
+    try String.trim (input_line ic) with _ -> "0000000000000000000000000000000000000000" in
+  ignore (Unix.close_process_in ic);
+  Current.return
+    (Current_git.Commit.v ~repo:path
+       ~id:(Current_git.Commit_id.v
+              ~repo:p ~gref:"refs/heads/master" ~hash:sha))
+
 (** Resolve one [opam_repositories] entry to a live
-    [Current_git.Commit.t Current.t]. Entries are local paths;
-    [Current_git.Local] watches each path's [.git] dir via inotify,
-    so whatever refreshes the clone (manual [git pull],
-    {!Docs_ci_lib.Remote_opam_repo.maintain}, or a cron job) flows
-    through automatically. *)
-let repo_commit ~schedule:_ ~git_local_cache entry : Current_git.Commit.t Current.t =
-  let path = Fpath.v entry in
-  let local =
-    match Hashtbl.find_opt git_local_cache entry with
-    | Some l -> l
-    | None ->
-      let l = Current_git.Local.v path in
-      Hashtbl.replace git_local_cache entry l;
-      l in
-  Current_git.Local.head_commit local
+    [Current_git.Commit.t Current.t].
+
+    Entries are local paths. If the path is in [remote_commits] (i.e.
+    a remote was declared via [--remote URL=PATH]), the commit comes
+    directly from the {!Docs_ci_lib.Remote_opam_repo.maintain_commit}
+    output for that remote — no inotify, no filesystem watcher; the
+    pull job's post-fetch SHA flows straight through OCurrent. Local-
+    only entries (no [--remote]) fall back to {!one_shot_head_commit}.
+
+    The previous version watched every entry with [Current_git.Local],
+    which decoupled solver triggers from pull-job outcomes — and
+    silently masked bugs where the pull "succeeded" but didn't move
+    HEAD (detached-HEAD, no upstream tracking, etc.). Reading the SHA
+    from the pull job directly makes the dependency edge explicit. *)
+let repo_commit ~remote_commits entry : Current_git.Commit.t Current.t =
+  match Hashtbl.find_opt remote_commits entry with
+  | Some c -> c
+  | None -> one_shot_head_commit (Fpath.v entry)
 
 (** A live [(path, sha) Current.t] for one entry of a profile's
     [opam_repositories]. Paths are observed via {!Current_git.Local}
@@ -137,9 +160,9 @@ let repo_commit ~schedule:_ ~git_local_cache entry : Current_git.Commit.t Curren
     {!Docs_ci_lib.Remote_opam_repo}, kept separate so that the
     [Day11_batch.Profile] stays local-path-only across both
     ocaml-docs-ci and the [day11] CLI. *)
-let repo_source ~schedule ~git_local_cache entry : (string * string) Current.t =
+let repo_source ~remote_commits entry : (string * string) Current.t =
   let open Current.Syntax in
-  let commit = repo_commit ~schedule ~git_local_cache entry in
+  let commit = repo_commit ~remote_commits entry in
   let+ commit = commit in
   let sha = Current_git.Commit_id.hash (Current_git.Commit.id commit) in
   (entry, sha)
@@ -152,19 +175,19 @@ let repo_source ~schedule ~git_local_cache entry : (string * string) Current.t =
     matching opam's overlay behaviour — so a profile's oxcaml overlay
     can both {e add} new packages (e.g. [oxcaml-compiler]) and {e
     override} mainline entries by name+version. *)
-let tracking_commits ~schedule ~git_local_cache (profile : Profile.t) =
+let tracking_commits ~remote_commits (profile : Profile.t) =
   match profile.opam_repositories with
   | [] ->
     failwith (Printf.sprintf
       "profile %s: opam_repositories is empty — nothing to track"
       profile.name)
   | entries ->
-    List.map (repo_commit ~schedule ~git_local_cache) entries
+    List.map (repo_commit ~remote_commits) entries
 
 (** Full repos_with_shas [Current.t] for a profile. *)
-let repos_with_shas ~schedule ~git_local_cache (profile : Profile.t) =
+let repos_with_shas ~remote_commits (profile : Profile.t) =
   let entries =
-    List.map (repo_source ~schedule ~git_local_cache)
+    List.map (repo_source ~remote_commits)
       profile.opam_repositories in
   Current.list_seq entries
 
@@ -190,10 +213,10 @@ type resolved = {
         own packages on top of mainline. *)
 }
 
-let resolve ~schedule ~git_local_cache ~cache_dir (profile : Profile.t) =
+let resolve ~remote_commits ~cache_dir (profile : Profile.t) =
   let open Current.Syntax in
   let op = Op.{ profile; cache_dir } in
-  let repos = repos_with_shas ~schedule ~git_local_cache profile in
+  let repos = repos_with_shas ~remote_commits profile in
   let digest =
     Current.component "[%s] profile-ctx" profile.name
     |>
@@ -211,5 +234,5 @@ let resolve ~schedule ~git_local_cache ~cache_dir (profile : Profile.t) =
     let+ repos_with_shas = repos in
     snapshot_dir_of ~cache_dir ~profile_name:profile.name repos_with_shas
   in
-  let tracking_commits = tracking_commits ~schedule ~git_local_cache profile in
+  let tracking_commits = tracking_commits ~remote_commits profile in
   { ctx; snapshot_dir; repos_with_shas = repos; tracking_commits }

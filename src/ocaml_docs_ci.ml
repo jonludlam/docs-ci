@@ -98,30 +98,27 @@ let main () current_config github_auth mode profiles_arg profile_dir_arg
   ignore @@ Eio_main.run @@ fun env ->
   Lwt_eio.with_event_loop ~clock:(Eio.Stdenv.clock env) @@ fun _token ->
   let eio_env = (env :> Eio_unix.Stdenv.base) in
-  (* Shared cache of [Current_git.Local.t] for path-based repos, to
-     avoid creating redundant filesystem watchers across pipeline ticks. *)
-  let git_local_cache = Hashtbl.create 8 in
-  (* Tracking reads each profile's [opam_repositories] entries as
-     local paths via [Current_git.Local]. Remote URLs are handled
-     independently below by [Remote_opam_repo], which keeps the
-     declared [path] mirrored from [url] on a schedule; OCurrent's
-     Local watcher on the same path then surfaces the new HEAD to
-     the pipeline via inotify. *)
+  (* Map from a profile's [opam_repositories] entry (a local path) to
+     a live [Current_git.Commit.t Current.t] driven by
+     [Remote_opam_repo.maintain_commit]. The pipeline reads HEAD
+     directly from this map — no inotify, no filesystem watcher in
+     between. A profile entry whose path isn't backed by a [--remote]
+     spec falls back to a one-shot read of HEAD at startup. *)
   let remote_schedule =
     Current_cache.Schedule.v ~valid_for:(Duration.of_hour 1) () in
+  let remote_commits :
+    (string, Current_git.Commit.t Current.t) Hashtbl.t =
+    Hashtbl.create (List.length remote_specs) in
+  List.iter (fun (s : Docs_ci_lib.Remote_opam_repo.spec) ->
+    let commit = Docs_ci_lib.Remote_opam_repo.maintain_commit
+      ~schedule:remote_schedule ~url:s.url ~path:s.path in
+    Hashtbl.replace remote_commits (Fpath.to_string s.path) commit
+  ) remote_specs;
   let engine =
     Current.Engine.create ~config:current_config (fun () ->
-      let pipeline =
-        Docs_ci_pipelines.Docs.v ~config
-          ~eio_env ~cache_dir ~profiles ~git_local_cache ?cpu_slots ()
-        |> Current.ignore_value in
-      let remote_jobs =
-        List.map (fun (s : Docs_ci_lib.Remote_opam_repo.spec) ->
-          Docs_ci_lib.Remote_opam_repo.maintain
-            ~schedule:remote_schedule ~url:s.url ~path:s.path
-          |> Current.ignore_value)
-          remote_specs in
-      Current.all (pipeline :: remote_jobs))
+      Docs_ci_pipelines.Docs.v ~config
+        ~eio_env ~cache_dir ~profiles ~remote_commits ?cpu_slots ()
+      |> Current.ignore_value)
   in
   let has_role =
     if github_auth = None then Current_web.Site.allow_all else has_role

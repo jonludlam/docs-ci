@@ -69,13 +69,31 @@ module Op = struct
       let git_dir = Filename.concat path ".git" in
       let** () =
         if Sys.file_exists git_dir then
-          (* Non-destructive sync: [git fetch] + [git merge
-             --ff-only]. If the working tree has diverged from
-             origin (local commits, uncommitted edits) the merge
-             fails and we surface a clear error instead of silently
-             destroying the user's work. *)
+          (* Non-destructive sync. The previous version used [git merge
+             --ff-only FETCH_HEAD], which silently noops when HEAD is
+             detached: fetch updates [origin/*] tracking refs and writes
+             FETCH_HEAD with every fetched branch tagged
+             [not-for-merge], so the merge step has nothing to merge
+             and exits 0 without advancing HEAD. The repo then reports
+             a stale SHA forever, and downstream solver/build state
+             stays frozen even though origin has new commits.
+             We detect the detached case explicitly and shell out to
+             [git symbolic-ref] / [merge --ff-only @{u}] only when
+             there is actually a tracking upstream to fast-forward
+             against. The shell string is built with [Printf.sprintf]
+             rather than passed straight to {!run_sh}'s Fmt format,
+             because Fmt treats [@{...}] as a semantic-tag command
+             and would strip the [@{u}] git revspec from our command. *)
           let** () = run_sh job "git -C %s fetch --prune origin" path in
-          run_sh job "git -C %s merge --ff-only FETCH_HEAD" path
+          let cmd = Printf.sprintf
+            "git -C %s symbolic-ref -q HEAD >/dev/null && \
+             git -C %s merge --ff-only '@{u}' || { \
+               echo \"WARNING: HEAD detached at $(git -C %s rev-parse \
+                 --short HEAD); not auto-advancing. Run \
+                 'git -C %s checkout master' to recover.\" >&2; \
+               true; }"
+            path path path path in
+          run_sh job "%s" cmd
         else
           run_sh job "git clone %s %s"
             (Filename.quote key.url) (Filename.quote path)
@@ -92,14 +110,28 @@ module Cache = Current_cache.Make (Op)
 
 (** [maintain ~schedule ~url ~path] installs a scheduled puller that
     keeps [path] up to date with [url]. Returns the latest commit SHA
-    as a [Current.t]. The return value is usually ignored — the
-    downstream [Current_git.Local] watcher on [path] detects commit
-    changes via inotify independently. *)
+    as a [Current.t]. *)
 let maintain ~schedule ~url ~path : string Current.t =
   let open Current.Syntax in
   Current.component "pull %s" url |>
   let> () = Current.return () in
   Cache.get ~schedule () Op.Key.{ url; path }
+
+(** Same as {!maintain}, but lifts the SHA into a
+    [Current_git.Commit.t Current.t]. Downstream consumers that want
+    to read the commit's tree should use this instead of pairing
+    {!maintain} with [Current_git.Local.head_commit] — the latter
+    relies on an inotify watcher on [path/.git/], which can no-op
+    silently if the pull job claims success without actually
+    advancing HEAD. With this function the post-pull SHA flows
+    directly through OCurrent so a no-op pull means the same
+    [Commit.t] downstream, no kernel watcher in the loop. *)
+let maintain_commit ~schedule ~url ~path : Current_git.Commit.t Current.t =
+  let open Current.Syntax in
+  let+ sha = maintain ~schedule ~url ~path in
+  Current_git.Commit.v ~repo:path
+    ~id:(Current_git.Commit_id.v
+           ~repo:url ~gref:"refs/heads/master" ~hash:sha)
 
 (** One remote-mirror entry, passed via [--remote URL=PATH]. *)
 type spec = { url : string; path : Fpath.t }
