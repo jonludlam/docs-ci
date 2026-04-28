@@ -196,17 +196,39 @@ let v_for_profile ~config ~eio_env ~cache_dir:_ ?cpu_slots
   let target_solutions = List.map (fun (s : Day11_solver.solution) ->
     (s.target, s.solve_result)
   ) solutions in
-  let blessing_maps = List.map
-    (fun (target, (result : Day11_solution.Solve_result.t)) ->
-      (target, OpamPackage.Map.map (fun _ -> true) result.build_deps)
-    ) target_solutions in
+  (* Real blessing: run the same [compute_blessings] the day11 CLI
+     uses, so the per-build [blessed] flag written to history reflects
+     the canonical universe choice (maximise deps_count, then
+     revdeps_count, then compiler version). Without this every build
+     lands as [blessed:false], and the GUI shows "0 blessed builds"
+     even for latest-only profiles where one universe per package is
+     expected to be blessed. *)
+  let blessing_input = List.map
+    (fun (t, (r : Day11_solution.Solve_result.t)) -> (t, r.build_deps))
+    target_solutions in
+  let blessing_maps = Day11_batch.Blessing.compute_blessings blessing_input in
+  (* Set up [run_log] and [recorder] before [plan_doc_dag], so the
+     dispatch wrapped inside [doc_plan.build_one] can record outcomes
+     directly per-node. Recording at dispatch time means cascade-
+     skipped nodes (which OCurrent never invokes) leave no stale
+     "ran-and-failed" entry behind — their state is derivable from
+     the persisted DAG. *)
+  let packages_dir = Day11_batch.Snapshot.packages_dir snapshot_dir in
+  ignore (Bos.OS.Dir.create ~path:true packages_dir);
+  Day11_lib.Run_log.set_log_base_dir (Fpath.to_string snapshot_dir);
+  let run_log = Day11_lib.Run_log.start_run () in
+  let recorder = Day11_batch.Recorder.create
+    ~env ~benv ~os_dir:ctx.os_dir ~packages_dir
+    ~blessing_maps ~run_log in
+  let on_pkg_complete node ~success =
+    Day11_batch.Recorder.record_build recorder node ~success in
+  let on_doc_complete node ~success =
+    Day11_batch.Recorder.record_doc recorder node ~success in
   (* [plan_doc_dag] forks 9+ fibers (driver + per-compiler odoc),
      each running a [day11-solver-worker] subprocess. Subprocess
      awaits go through [Sys.Run.run] which yields on socket I/O,
      so under [Lwt_eio.with_event_loop] the cohttp web server gets
-     scheduler cycles between yields and stays responsive. The
-     parallelisation in [resolve_tools] cuts this from ~18s to
-     ~3s wall-clock. *)
+     scheduler cycles between yields and stays responsive. *)
   let doc_plan = match profile.html_dir with
     | None -> None
     | Some _ ->
@@ -220,6 +242,8 @@ let v_for_profile ~config ~eio_env ~cache_dir:_ ?cpu_slots
                   ~mounts:build_mounts node () with
           | Day11_opam_build.Types.Success _ -> true
           | _ -> false)
+        ~on_pkg_complete ~on_doc_complete
+        ~snapshot_dir
         ~nodes
         ~solutions:target_solutions ~blessing_maps ()
   in
@@ -258,21 +282,6 @@ let v_for_profile ~config ~eio_env ~cache_dir:_ ?cpu_slots
     | None -> fun _ -> Day11_doc.Generate.Build
   in
   let pool = get_build_pool (Config.jobs config) in
-  (* Per-snapshot Recorder for the day11 batch CLI's snapshot layout
-     ([packages/<pkg>/history.jsonl] + [status.json]). Lets users
-     navigate via [day11 status / failures / results] etc. against
-     the live ocaml-docs-ci pipeline. Created once per tick — but
-     dedup is keyed by hash inside [recorded] so a node's outcome
-     gets written to history at most once per tick.
-
-     [run_log]'s files live under [snapshot_dir/runs/]; we use a
-     fresh run id per tick. [blessing_maps] is empty for now —
-     per-build blessing isn't reflected in the day11 CLI output yet.
-     *)
-  let packages_dir = Day11_batch.Snapshot.packages_dir snapshot_dir in
-  ignore (Bos.OS.Dir.create ~path:true packages_dir);
-  Day11_lib.Run_log.set_log_base_dir (Fpath.to_string snapshot_dir);
-  let run_log = Day11_lib.Run_log.start_run () in
   (* Persist the planned-node counters so mid-run CLIs
      ([day11 status / results / failures]) can report a denominator
      via [Day11_batch.Live_view]. *)
@@ -288,16 +297,6 @@ let v_for_profile ~config ~eio_env ~cache_dir:_ ?cpu_slots
     ~n_compile:(count_kind Day11_doc.Generate.Compile)
     ~n_doc_all:(count_kind Day11_doc.Generate.Doc_all)
     ~n_link:(count_kind Day11_doc.Generate.Link);
-  let recorder = Day11_batch.Recorder.create
-    ~env ~benv ~os_dir:ctx.os_dir ~packages_dir
-    ~blessing_maps:[] ~run_log in
-  let recorded : (string, unit) Hashtbl.t = Hashtbl.create 1024 in
-  let record_once (dag_node : Day11_opam_layer.Build.t) ~success =
-    if not (Hashtbl.mem recorded dag_node.hash) then begin
-      Hashtbl.replace recorded dag_node.hash ();
-      Day11_batch.Recorder.record_build recorder dag_node ~success
-    end
-  in
   let node_cache : (string, Day11_prep.t Current.t) Hashtbl.t =
     Hashtbl.create (List.length all_dag_nodes) in
   let rec make_node (dag_node : Day11_opam_layer.Build.t) =
@@ -314,33 +313,16 @@ let v_for_profile ~config ~eio_env ~cache_dir:_ ?cpu_slots
         | Doc_all -> "doc"
         | Link -> "link"
       in
-      let raw =
+      (* Plain wiring — no [Current.catch], no synthesised fallback.
+         Recording is handled at dispatch time (inside [doc_plan]'s
+         [build_one] via [on_pkg_complete]/[on_doc_complete]), so when
+         a dep is Error the entire subtree cascades to Error in the
+         OCurrent graph and dispatch is never invoked. Cascade
+         attribution is recoverable from [<snapshot_dir>/dag.json] +
+         the per-package history. *)
+      let node =
         Day11_prep.run_node ~env ~os_dir:ctx.os_dir ~pool ~dispatch
           ~label ~profile_name:profile.name ~dag_node ~deps ()
-      in
-      (* Catch + map to record outcome the first time the node settles
-         to Ok or Error in this tick. The result is the same as [raw]
-         so downstream consumers see the original Pending/Ok/Error
-         state; the side effect is just the recorder write. *)
-      let node =
-        let open Current.Syntax in
-        let+ res = Current.catch raw in
-        let success = Result.is_ok res in
-        record_once dag_node ~success;
-        match res with
-        | Ok v -> v
-        | Error _ ->
-          (* Synthesise a Day11_prep.t for failed nodes so consumers
-             that rely on the value still get something. The dir is
-             where the failed layer would have been written. *)
-          let layer_dir =
-            Day11_layer.Layer.dir
-              (Day11_layer.Layer.of_hash ~os_dir:ctx.os_dir
-                 dag_node.hash) in
-          { Day11_prep.pkg = dag_node.pkg;
-            build_hash = dag_node.hash;
-            layer_dir;
-            all_layer_dirs = [ layer_dir ] }
       in
       Hashtbl.replace node_cache dag_node.hash node;
       node
@@ -352,29 +334,26 @@ let v_for_profile ~config ~eio_env ~cache_dir:_ ?cpu_slots
      work as before), but [pipeline.svg] renders them as one "[+]"
      node per profile which the user can expand on demand. Without
      this, the diagram has thousands of nodes and [dot] can't
-     render it. *)
+     render it.
+     We [Current.catch] each node before [list_seq] purely so an
+     individual node failing doesn't put the whole list_seq into
+     Error and starve downstream cleanup of evaluations. The
+     cascade still works at the per-node level because each
+     [make_node] call wires its parent's deps to the un-caught
+     [node] — caught only in this final aggregation. *)
   let collapsed_builds =
     Current.collapse
       ~key:"profile-builds" ~value:profile.name
       ~input:ctx_current
-      (Current.list_seq all_nodes)
+      (Current.list_seq (List.map Current.catch all_nodes))
   in
   let+ _results = collapsed_builds in
-  (* Settle the snapshot: write history entries from accumulated
-     outcomes and regenerate [status.json]. Triggered each time
-     [list_seq] re-evaluates; the recorder dedups so we don't
-     duplicate history rows within a single tick. *)
-  let compiler = match ctx.ocaml_version with
-    | Some pkg -> OpamPackage.to_string pkg
-    | None -> "unknown" in
-  let results : Day11_batch.Summary.results = {
-    builds = Day11_batch.Recorder.outcomes recorder;
-    docs = [];
-    targets = List.map (fun (s : Day11_solver.solution) -> s.target)
-                solutions;
-  } in
-  ignore (Day11_batch.Summary.finish ~snapshot_dir ~packages_dir
-            ~run_info:run_log ~compiler results);
+  (* Status regen: history.jsonl is already up to date (incremental),
+     this just re-derives [status.json] from it. Triggered each time
+     [list_seq] re-evaluates. *)
+  Day11_batch.Summary.generate_status
+    ~snapshot_dir ~packages_dir
+    ~run_id:(Day11_lib.Run_log.get_id run_log);
   ()
 
 (* Fan out across profiles: each profile gets its own sub-pipeline
@@ -386,15 +365,13 @@ let v_for_profile ~config ~eio_env ~cache_dir:_ ?cpu_slots
    live [Current_git] polling of its [opam_repositories] — so changes
    to any repo (remote or local) invalidate the solver cache. See
    [Day11_profile_ctx_loader]. *)
-let v ~config ~eio_env ~cache_dir ~profiles ~git_local_cache
+let v ~config ~eio_env ~cache_dir ~profiles ~remote_commits
     ?cpu_slots () =
-  let sched_hourly =
-    Current_cache.Schedule.v ~valid_for:(Duration.of_hour 1) () in
   let sub_pipelines =
     List.map (fun profile ->
       let resolved =
-        Day11_profile_ctx_loader.resolve ~schedule:sched_hourly
-          ~git_local_cache ~cache_dir profile in
+        Day11_profile_ctx_loader.resolve ~remote_commits
+          ~cache_dir profile in
       v_for_profile ~config ~eio_env ~cache_dir ?cpu_slots
         ~tracking_commits:resolved.tracking_commits
         resolved.ctx

@@ -20,9 +20,19 @@ val maintain :
   string Current.t
 (** [maintain ~schedule ~url ~path] installs an OCurrent job that:
     - on first run, [git clone --depth=1 URL PATH];
-    - on each subsequent schedule fire, [git fetch + git reset --hard
-      origin/HEAD] in [PATH].
+    - on each subsequent schedule fire, [git fetch + git merge
+      --ff-only @{u}] in [PATH].
 
-    Returns the latest commit SHA, though callers usually ignore it
-    — a separate {!Current_git.Local} watcher on [PATH] surfaces
-    head changes to downstream pipeline stages via inotify. *)
+    Returns the latest commit SHA. *)
+
+val maintain_commit :
+  schedule:Current_cache.Schedule.t ->
+  url:string ->
+  path:Fpath.t ->
+  Current_git.Commit.t Current.t
+(** Same as {!maintain}, but lifts the SHA into a
+    [Current_git.Commit.t] keyed by [path]. Downstream consumers that
+    want a [Commit.t] should use this instead of pairing {!maintain}
+    with [Current_git.Local.head_commit] — the latter relies on an
+    inotify watcher on [path/.git/], which can no-op silently if the
+    pull job claims success without actually advancing HEAD. *)
