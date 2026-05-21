@@ -26,6 +26,8 @@ let style = {|
   .fail { color: #c0392b; }
   .cascade { color: #d68910; }
   .pending { color: #7f8c8d; font-style: italic; }
+  .warn { background: #fef9e7; border-left: 3px solid #f1c40f;
+          padding: 0.4em 0.7em; margin: 0.5em 0; }
   .sha { font-family: ui-monospace, "SF Mono", Menlo, monospace;
          font-size: 0.9em; color: #7f8c8d; }
   .pager { margin-top: 1em; font-size: 0.9em; }
