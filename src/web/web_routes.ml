@@ -16,6 +16,8 @@ let routes ~(ctx : Pages.ctx) =
       (fun name -> (Pages.profile_dashboard ~ctx:p name :> Resource.t));
     (s "profiles" / str / s "snapshots" /? nil) @-->
       (fun name -> (Pages.snapshots_list ~ctx:p name :> Resource.t));
+    (s "profiles" / str / s "recent" /? nil) @-->
+      (fun name -> (Pages.recent_changes ~ctx:p name :> Resource.t));
     (s "profiles" / str / s "snapshots" / str /? nil) @-->
       (fun name key ->
         (Pages.snapshot_detail ~ctx:p name key :> Resource.t));
