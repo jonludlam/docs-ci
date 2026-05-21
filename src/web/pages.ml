@@ -21,6 +21,42 @@ type ctx = {
   cache_dir : Fpath.t;
 }
 
+(** Memoise an expensive file read by (path, mtime). The cache is
+    process-wide and never trimmed — call sites are bounded (one
+    [dag.json] per snapshot, one [layer_status.jsonl] per os_dir),
+    and a stale entry is just memory, never wrong data, because the
+    mtime changes the cache key. *)
+let memo_by_mtime
+    : type a. (Fpath.t, float * a) Hashtbl.t -> Fpath.t -> (unit -> a) -> a
+    = fun cache p compute ->
+  let p_s = Fpath.to_string p in
+  let mtime = try (Unix.stat p_s).Unix.st_mtime with _ -> 0.0 in
+  match Hashtbl.find_opt cache p with
+  | Some (m, v) when m = mtime -> v
+  | _ ->
+    let v = compute () in
+    Hashtbl.replace cache p (mtime, v);
+    v
+
+let dag_cache :
+  (Fpath.t, float *
+    (Day11_lib.Dag_marshal.entry list, [ `Msg of string ]) result)
+  Hashtbl.t = Hashtbl.create 8
+
+let read_dag_cached snapshot_dir =
+  let p = Fpath.(snapshot_dir / "dag.json") in
+  memo_by_mtime dag_cache p
+    (fun () -> Day11_lib.Dag_marshal.read ~snapshot_dir)
+
+let layer_status_cache :
+  (Fpath.t, float * (string, Day11_layer.Layer_status.entry) Hashtbl.t)
+  Hashtbl.t = Hashtbl.create 4
+
+let load_layer_status_cached os_dir =
+  let p = Fpath.(os_dir / "layer_status.jsonl") in
+  memo_by_mtime layer_status_cache p
+    (fun () -> Day11_layer.Layer_status.load ~os_dir)
+
 (** [snapshots_base ctx name] is the on-disk dir holding all
     snapshots for the named profile. Mirrors
     [Day11_profile_ctx_loader.snapshots_base_for]. *)
@@ -32,14 +68,15 @@ let snapshots_base ctx name =
     finished timestamp) or [None] if not cached. Accepts either the
     short (12-char) form or the full 32-char hash — we match on the
     [substr(key,1,N)] prefix for whichever length we got. *)
+let job_db_path = "/home/jjl25/ocaml-docs-ci-oi-sharing/var/db/sqlite.db"
+
 let job_id_for_hash hash =
   let n = min 12 (String.length hash) in
   let prefix = String.sub hash 0 n in
-  let db_path = "/home/jjl25/ocaml-docs-ci-oi-sharing/var/db/sqlite.db" in
-  if not (Sys.file_exists db_path) then None
+  if not (Sys.file_exists job_db_path) then None
   else
     try
-      let db = Sqlite3.db_open ~mode:`READONLY db_path in
+      let db = Sqlite3.db_open ~mode:`READONLY job_db_path in
       let stmt = Sqlite3.prepare db
         "SELECT job_id FROM cache \
          WHERE substr(key,1,?) = ? AND op LIKE 'day11-%' \
@@ -57,6 +94,49 @@ let job_id_for_hash hash =
       ignore (Sqlite3.db_close db);
       !result
     with _ -> None
+
+(** Batched variant. Issues a single SELECT for the union of given
+    hashes (12-char prefixes) instead of one query per hash. The
+    [snapshot_detail] failures table calls this once with all the
+    failed-node hashes — 100+ SQL round-trips collapse to one. *)
+let job_ids_for_hashes hashes =
+  let result : (string, string) Hashtbl.t = Hashtbl.create 64 in
+  let prefixes = List.filter_map (fun h ->
+    if String.length h = 0 then None
+    else Some (String.sub h 0 (min 12 (String.length h)))) hashes in
+  match prefixes with
+  | [] -> result
+  | _ when not (Sys.file_exists job_db_path) -> result
+  | _ ->
+    try
+      let db = Sqlite3.db_open ~mode:`READONLY job_db_path in
+      let placeholders = String.concat ","
+        (List.mapi (fun i _ -> Printf.sprintf "?%d" (i + 1)) prefixes) in
+      let sql = Printf.sprintf
+        "SELECT substr(key,1,12) AS prefix, job_id, MAX(finished) \
+         FROM cache \
+         WHERE substr(key,1,12) IN (%s) AND op LIKE 'day11-%%' \
+         GROUP BY substr(key,1,12)"
+        placeholders in
+      let stmt = Sqlite3.prepare db sql in
+      List.iteri (fun i p ->
+        ignore (Sqlite3.bind_blob stmt (i + 1) p)) prefixes;
+      let rec loop () =
+        match Sqlite3.step stmt with
+        | Sqlite3.Rc.ROW ->
+          (match Sqlite3.column stmt 0, Sqlite3.column stmt 1 with
+           | Sqlite3.Data.BLOB p, Sqlite3.Data.TEXT j
+           | Sqlite3.Data.TEXT p, Sqlite3.Data.TEXT j ->
+             Hashtbl.replace result p j
+           | _ -> ());
+          loop ()
+        | _ -> ()
+      in
+      loop ();
+      ignore (Sqlite3.finalize stmt);
+      ignore (Sqlite3.db_close db);
+      result
+    with _ -> result
 
 (** List a profile's snapshots, newest first by mtime. *)
 let list_snapshots_newest_first ctx name =
@@ -195,8 +275,12 @@ let profile_dashboard ~ctx name =
             a ~a:[ a_href (Printf.sprintf "/profiles/%s/snapshots" name) ]
               [ txt (Printf.sprintf "All snapshots (%d)"
                        (List.length snaps)) ] in
+          let recent_link =
+            a ~a:[ a_href (Printf.sprintf "/profiles/%s/recent" name) ]
+              [ txt "Recent changes" ] in
           [ p [ txt "Latest snapshot: "; snapshot_link ];
-            ul [ li [ snapshots_link ] ] ]
+            ul [ li [ recent_link ];
+                 li [ snapshots_link ] ] ]
       in
       Context.respond_ok web_ctx
         ([ Templates.style_block; crumbs; h2 [ txt name ] ] @ body)
@@ -283,6 +367,14 @@ let snapshot_detail ~ctx name key =
     inherit Resource.t
     val! can_get = `Viewer
     method! private get web_ctx =
+      let _t0 = Unix.gettimeofday () in
+      let timing label fn =
+        let s = Unix.gettimeofday () in
+        let r = fn () in
+        Printf.eprintf "[snapshot_detail %s] %s: %.3fs\n%!" key label
+          (Unix.gettimeofday () -. s);
+        r
+      in
       let snapshot_dir = Fpath.(snapshots_base ctx name / key) in
       let crumbs = Templates.breadcrumbs [
         Some "/profiles", "Profiles";
@@ -304,14 +396,67 @@ let snapshot_detail ~ctx name key =
               (path, commit))
           with _ -> []
       in
+      (* Read the live HEAD of [path] (a local git repo). Returns
+         [None] if [path] isn't a git repo or the read fails — non-git
+         paths (rare for tracked repos) just leave the "Latest" cell
+         blank. Captures stderr alongside stdout so a transient
+         "fatal: ambiguous argument" doesn't pollute the page. *)
+      let read_live_head path =
+        let cmd = Printf.sprintf
+          "git -C %s rev-parse HEAD 2>/dev/null"
+          (Filename.quote path) in
+        try
+          let ic = Unix.open_process_in cmd in
+          let line = try Some (String.trim (input_line ic))
+                     with End_of_file -> None in
+          let _ = Unix.close_process_in ic in
+          match line with
+          | Some s when String.length s = 40 -> Some s
+          | _ -> None
+        with _ -> None
+      in
+      (* For a github-pin-overlay path of the form ".../overlays/<n>/repo",
+         the [.../overlays/<n>/upstream] sibling holds the actual
+         upstream clone (e.g. ocaml/odoc or jonludlam/odoc). Surface
+         its current HEAD too so the user sees the underlying sha
+         being tracked, not just the overlay-repo's bookkeeping sha. *)
+      let upstream_head_for path =
+        let suffix = "/repo" in
+        if Astring.String.is_suffix ~affix:suffix path then
+          let base = String.sub path 0 (String.length path - String.length suffix) in
+          let upstream = base ^ "/upstream" in
+          if Sys.file_exists upstream
+          then Option.map (fun h -> (upstream, h)) (read_live_head upstream)
+          else None
+        else None
+      in
       let repos_table = match repos with
         | [] -> p [ em [ txt "No repos.json on disk." ] ]
         | _ ->
+          let row (p, c) =
+            let live = read_live_head p in
+            let live_cell = match live with
+              | None -> em [ txt "—" ]
+              | Some h when h = c -> Templates.sha_span h
+              | Some h -> span ~a:[ a_class [ "warn" ] ]
+                  [ Templates.sha_span h ]
+            in
+            let upstream_rows = match upstream_head_for p with
+              | None -> []
+              | Some (upath, uhead) ->
+                [ tr [ td [ code [ txt (upath ^ " (upstream)") ] ];
+                       td [ em [ txt "—" ] ];
+                       td [ Templates.sha_span uhead ] ] ]
+            in
+            tr [ td [ code [ txt p ] ];
+                 td [ Templates.sha_span c ];
+                 td [ live_cell ] ] :: upstream_rows
+          in
           table ~a:[ a_class [ "data" ] ]
-            ~thead:(thead [ tr [ th [ txt "Repo" ]; th [ txt "Commit" ] ] ])
-            (List.map (fun (p, c) ->
-              tr [ td [ code [ txt p ] ];
-                   td [ Templates.sha_span c ] ]) repos)
+            ~thead:(thead [ tr [ th [ txt "Repo" ];
+                                 th [ txt "Snapshot" ];
+                                 th [ txt "Latest" ] ] ])
+            (List.concat_map row repos)
       in
       let totals =
         match Day11_lib.Status_index.read ~dir:snapshot_dir with
@@ -387,8 +532,9 @@ let snapshot_detail ~ctx name key =
       in
       (* Read dag.json + classify once. Drives Failures list, DAG
          overview, and cascade breakdown — all want the same view. *)
-      let dag_data =
-        match Day11_lib.Dag_marshal.read ~snapshot_dir with
+      let dag_data = timing "dag_data" (fun () ->
+        match timing "read_dag_cached" (fun () ->
+          read_dag_cached snapshot_dir) with
         | Error _ -> None
         | Ok entries ->
           let os_dir =
@@ -399,18 +545,22 @@ let snapshot_detail ~ctx name key =
           in
           let cascade_table = match os_dir with
             | Some d ->
-              Day11_lib.Cascade.classify_from_layers ~os_dir:d entries
+              let status_index = timing "load_layer_status_cached"
+                (fun () -> load_layer_status_cached d) in
+              timing "classify_from_layer_index" (fun () ->
+                Day11_lib.Cascade.classify_from_layer_index
+                  ~status_index entries)
             | None ->
               let packages_dir = Fpath.(snapshot_dir / "packages") in
               Day11_lib.Cascade.classify ~packages_dir entries
           in
-          Some (entries, cascade_table)
+          Some (entries, cascade_table))
       in
       (* Surface failed nodes prominently. Driven by cascade_table when
          dag.json is present (comprehensive: includes failures cached
          from previous snapshots that didn't re-dispatch); falls back
          to per-snapshot history for older snapshots without dag.json. *)
-      let failures_section =
+      let failures_section = timing "failures_section" (fun () ->
         match dag_data with
         | Some (entries, cascade_table) ->
           let failed = List.filter_map (fun (e : Day11_lib.Dag_marshal.entry) ->
@@ -431,9 +581,18 @@ let snapshot_detail ~ctx name key =
              let sorted = List.sort (fun (a : Day11_lib.Dag_marshal.entry) b ->
                compare (OpamPackage.to_string a.pkg)
                        (OpamPackage.to_string b.pkg)) failed in
+             (* Batch SQLite lookup: one query for all failed hashes
+                instead of one per row (was 50+ ms × 100s of rows = the
+                whole page). *)
+             let job_ids = job_ids_for_hashes
+               (List.map (fun (e : Day11_lib.Dag_marshal.entry) ->
+                  e.hash) sorted) in
              let row (e : Day11_lib.Dag_marshal.entry) =
                let pkg_cell = pkg_link (OpamPackage.to_string e.pkg) in
-               let log_target = match job_id_for_hash e.hash with
+               let prefix = String.sub e.hash 0
+                 (min 12 (String.length e.hash)) in
+               let log_target =
+                 match Hashtbl.find_opt job_ids prefix with
                  | Some job_id -> "/job/" ^ job_id
                  | None ->
                    Printf.sprintf "/profiles/%s/builds/%s/log" name e.hash
@@ -465,6 +624,11 @@ let snapshot_detail ~ctx name key =
           let total_pkgs = List.length pkgs in
           let no_history = total_pkgs - with_history in
           (match failures with
+           | [] when total_pkgs = 0 ->
+             [ p [ em [ txt "Snapshot still being prepared — no dag.json \
+                              written yet, and no per-package history \
+                              recorded. Check back once the run reaches \
+                              dispatch." ] ] ]
            | [] when no_history > 0 ->
              [ p [ em [ txt (Printf.sprintf
                "No dag.json and no history yet (%d/%d packages)."
@@ -480,13 +644,13 @@ let snapshot_detail ~ctx name key =
                  ~thead:(thead [ tr [ th [ txt "Package" ];
                                       th [ txt "Status" ];
                                       th [ txt "Category" ] ] ])
-                 (List.map row failures) ])
+                 (List.map row failures) ]))
       in
       (* Comprehensive DAG overview from on-disk layer state, plus a
          per-cascade breakdown when there's something to show. Both
          derived from one [Cascade.classify_from_layers] pass over
          dag.json + [<os_dir>/layer_status.jsonl]. *)
-      let overview_section, cascade_section =
+      let overview_section, cascade_section = timing "overview+cascade" (fun () ->
         match dag_data with
         | None -> [], []
         | Some (entries, cascade_table) ->
@@ -575,53 +739,79 @@ let snapshot_detail ~ctx name key =
                   rows ]
             end
           in
-          overview, cascade
+          overview, cascade)
       in
       (* Build pkg_table from dag.json (every planned package, sorted)
          with status from cascade_table. Falls back to the legacy
          per-snapshot list when dag.json is missing. *)
-      let pkg_count, pkg_table =
+      let pkg_count, pkg_table = timing "pkg_table" (fun () ->
         match dag_data with
         | Some (entries, cascade_table) ->
+          (* Per-package, two separate columns: Build status (build/tool
+             kinds) and Doc status (compile/doc_all/link kinds). Each
+             aggregated worst-of across that package's entries of the
+             relevant kinds. Reflects what users care about: "did the
+             package build" and "did its docs build" are independent
+             concerns; merging them as one column hides doc failures
+             behind a successful build. *)
           let by_name :
-            (string, Day11_lib.Cascade.status list) Hashtbl.t =
+            (string,
+              Day11_lib.Cascade.status list
+              * Day11_lib.Cascade.status list) Hashtbl.t =
             Hashtbl.create 4096 in
+          let kind_bucket : Day11_lib.Dag_marshal.kind -> [`Build | `Doc | `Skip] =
+            function
+            | Build | Tool -> `Build
+            | Compile | Doc_all | Link -> `Doc
+          in
           List.iter (fun (e : Day11_lib.Dag_marshal.entry) ->
-            match e.kind with
-            | Build ->
+            match kind_bucket e.kind with
+            | `Skip -> ()
+            | bucket ->
               let name = OpamPackage.to_string e.pkg in
-              let prev = try Hashtbl.find by_name name
-                with Not_found -> [] in
               let st = match Hashtbl.find_opt cascade_table e.hash with
                 | Some r -> r.status
                 | None -> Day11_lib.Cascade.Pending
               in
-              Hashtbl.replace by_name name (st :: prev)
-            | _ -> ()
+              let bs, ds = try Hashtbl.find by_name name
+                with Not_found -> ([], []) in
+              let bs', ds' = match bucket with
+                | `Build -> (st :: bs, ds)
+                | `Doc -> (bs, st :: ds)
+                | `Skip -> (bs, ds)
+              in
+              Hashtbl.replace by_name name (bs', ds')
           ) entries;
           let aggregate sts =
             (* Worst-of (Failed > Cascade > Pending > Ok) — surfaces
-               problems on packages with multiple universes. *)
-            if List.exists (fun s -> s = Day11_lib.Cascade.Failed) sts
-            then "failed"
+               problems on packages with multiple universes. Empty list
+               means this column doesn't apply (e.g. tool-only package
+               with no doc kinds), shown as "—". *)
+            if sts = [] then None
+            else if List.exists (fun s -> s = Day11_lib.Cascade.Failed) sts
+            then Some "failed"
             else if List.exists (function
                 | Day11_lib.Cascade.Cascade _ -> true | _ -> false) sts
-            then "cascade"
+            then Some "cascade"
             else if List.exists (fun s -> s = Day11_lib.Cascade.Pending) sts
-            then "pending"
-            else "ok"
+            then Some "pending"
+            else Some "ok"
+          in
+          let cell sts = match aggregate sts with
+            | Some s -> td [ Templates.status_span s ]
+            | None -> td [ em [ txt "—" ] ]
           in
           let names = Hashtbl.fold (fun n _ acc -> n :: acc) by_name [] in
           let names = List.sort compare names in
           let row name =
-            let sts = Hashtbl.find by_name name in
-            tr [ td [ pkg_link name ];
-                 td [ Templates.status_span (aggregate sts) ] ]
+            let bs, ds = Hashtbl.find by_name name in
+            tr [ td [ pkg_link name ]; cell bs; cell ds ]
           in
           (List.length names,
            table ~a:[ a_class [ "data" ] ]
              ~thead:(thead [ tr [ th [ txt "Package" ];
-                                  th [ txt "Status" ] ] ])
+                                  th [ txt "Build" ];
+                                  th [ txt "Doc" ] ] ])
              (List.map row names))
         | None ->
           let pkg_row p =
@@ -638,34 +828,430 @@ let snapshot_detail ~ctx name key =
              table ~a:[ a_class [ "data" ] ]
                ~thead:(thead [ tr [ th [ txt "Package" ];
                                     th [ txt "Status" ] ] ])
-               (List.map pkg_row pkgs))
+               (List.map pkg_row pkgs)))
       in
-      Context.respond_ok web_ctx ([
-        Templates.style_block; crumbs;
-        h2 [ txt (name ^ " / "); Templates.sha_span key ];
-      ] @ diff_link
-        @ overview_section
-        @ [ h3 [ txt "Failures" ] ]
-        @ failures_section
-        @ cascade_section
-        @ [
-        h3 [ txt "Repos at this snapshot" ];
-        repos_table;
-        h3 [ txt "Status totals" ];
-      ] @ totals @ [
-        h3 [ txt (Printf.sprintf "Packages (%d)" pkg_count) ];
-        pkg_table;
-      ])
+      let r = timing "respond_ok+render" (fun () ->
+        Context.respond_ok web_ctx ([
+          Templates.style_block; crumbs;
+          h2 [ txt (name ^ " / "); Templates.sha_span key ];
+        ] @ diff_link
+          @ overview_section
+          @ [ h3 [ txt "Failures" ] ]
+          @ failures_section
+          @ cascade_section
+          @ [
+          h3 [ txt "Repos at this snapshot" ];
+          repos_table;
+          h3 [ txt "Status totals" ];
+        ] @ totals @ [
+          h3 [ txt (Printf.sprintf "Packages (%d)" pkg_count) ];
+          pkg_table;
+        ]))
+      in
+      Printf.eprintf "[snapshot_detail %s] TOTAL: %.3fs\n%!"
+        key (Unix.gettimeofday () -. _t0);
+      r
   end
+
+(* ── Diff helpers ─────────────────────────────────────────────── *)
+
+(* A package's per-snapshot identity is [(name, version)] so that
+   two versions of the same package (e.g. [astring.0.8.3] AND
+   [astring.0.8.5] both present in the newer snapshot) each get
+   their own row instead of collapsing together. *)
+
+type pkg_change =
+  | Added of string * string * string
+    (** [(version, status, build_hash)] — fresh package in the new
+        snapshot. [build_hash] is the dispatched build's hash so the
+        status cell can deep-link to logs / docs; empty string when
+        unknown. *)
+  | Removed of string
+    (** [version] — package present in old, gone in new. *)
+  | Status_changed of string * string * string * string
+    (** [(version, old_status, new_status, new_build_hash)] — same
+        (name, version), different status. *)
+  | Version_changed of string * string * string * string
+    (** [(old_version, new_version, new_status, new_build_hash)] —
+        single old version replaced by a single new version
+        (collapsed Removed+Added). *)
+
+let split_pkg pkg_str =
+  match String.index_opt pkg_str '.' with
+  | None -> None
+  | Some i ->
+    let n = String.sub pkg_str 0 i in
+    let v = String.sub pkg_str (i + 1) (String.length pkg_str - i - 1) in
+    Some (n, v)
+
+(* Aggregate a list of [(status, build_hash)] entries (one per
+   universe of the same (name, version)) into a single
+   [(status_str, hash)] pair. Status is the highest-priority status
+   present (failure > cascade > pending > success); the chosen hash
+   is the first entry with the chosen status, so failed builds yield
+   a hash that links to a failed build log. Returns empty string
+   for the hash when [entries] is empty. *)
+let aggregate_pkg_status_with_hash entries =
+  let is_failed = function Day11_lib.Cascade.Failed -> true | _ -> false in
+  let is_cascade = function
+    | Day11_lib.Cascade.Cascade _ -> true | _ -> false in
+  let is_pending = function
+    | Day11_lib.Cascade.Pending -> true | _ -> false in
+  let pick filter =
+    match List.find_opt (fun (s, _) -> filter s) entries with
+    | Some (_, h) -> h
+    | None -> ""
+  in
+  if List.exists (fun (s, _) -> is_failed s) entries
+  then ("failure", pick is_failed)
+  else if List.exists (fun (s, _) -> is_cascade s) entries
+  then ("cascade", pick is_cascade)
+  else if List.exists (fun (s, _) -> is_pending s) entries
+  then ("pending", pick is_pending)
+  else
+    let h = match entries with (_, h) :: _ -> h | [] -> "" in
+    ("success", h)
+
+let os_dir_for ~ctx name =
+  match Profile.load ~dir:ctx.profile_dir ~name with
+  | Ok profile -> Some Fpath.(ctx.cache_dir / Profile.os_dir_name profile)
+  | Error _ -> None
+
+(* The profile's [html_dir], if configured. Used to check whether
+   rendered HTML actually exists for a (pkg, ver) before linking to
+   it — voodoo can fail for individual packages even when the build
+   layer succeeded, leaving the docs link 404-ing. *)
+let html_dir_for ~ctx name =
+  match Profile.load ~dir:ctx.profile_dir ~name with
+  | Ok profile -> Option.map Fpath.v profile.html_dir
+  | Error _ -> None
+
+let docs_index_path ~html_dir pkg version =
+  Fpath.(html_dir / "p" / pkg / version / "doc" / "index.html")
+
+let docs_exist ~html_dir pkg version =
+  Sys.file_exists (Fpath.to_string (docs_index_path ~html_dir pkg version))
+
+(* Compute [(name, version) → (status, hash)] from dag.json + layer
+   state. Sources from [dag.json] + layer state so cached nodes
+   still appear (the legacy [packages/] dir is only the dispatched-
+   this-run subset). Falls back to per-package history when dag.json
+   is missing. Slow — typically ≥1s per snapshot because dag.json
+   is ~25 MB; callers should go through [load_snapshot_pkgs] which
+   adds an on-disk summary cache.
+
+   The aggregation considers ALL kinds for a (name, version) — the
+   build, the doc-side compile, and link / doc_all — not just the
+   build itself. A package whose build succeeded but whose link
+   cascaded due to an upstream doc-side failure correctly shows up
+   as "cascade" rather than "success". The chosen [hash] points at
+   the node matching the dominant status, so a "cascade" badge
+   deep-links to the actually-cascaded link / doc_all node, not to
+   the (uninteresting) successful build. *)
+let compute_snapshot_pkgs ~os_dir snapshot_dir =
+  match read_dag_cached snapshot_dir, os_dir with
+  | Ok entries, Some od ->
+    let status_index = load_layer_status_cached od in
+    let table = Day11_lib.Cascade.classify_from_layer_index
+      ~status_index entries in
+    let by_pkg : (string * string,
+                  (Day11_lib.Cascade.status * string) list) Hashtbl.t =
+      Hashtbl.create 4096 in
+    List.iter (fun (e : Day11_lib.Dag_marshal.entry) ->
+      match e.kind, split_pkg (OpamPackage.to_string e.pkg) with
+      | (Build | Compile | Link | Doc_all), Some (n, v) ->
+        let st = match Hashtbl.find_opt table e.hash with
+          | Some r -> r.status
+          | None -> Day11_lib.Cascade.Pending
+        in
+        let prev = try Hashtbl.find by_pkg (n, v)
+          with Not_found -> [] in
+        Hashtbl.replace by_pkg (n, v) ((st, e.hash) :: prev)
+      | _ -> ()
+    ) entries;
+    Hashtbl.fold (fun key entries acc ->
+      let agg = aggregate_pkg_status_with_hash entries in
+      (key, agg) :: acc) by_pkg []
+  | _ ->
+    snapshot_packages snapshot_dir
+    |> List.fold_left (fun m pkg ->
+      let entries = Day11_lib.History.read
+        ~packages_dir:Fpath.(snapshot_dir / "packages") ~pkg_str:pkg in
+      match entries, split_pkg pkg with
+      | latest :: _, Some (n, v) ->
+        let hash = match latest.build_hash with s -> s in
+        ((n, v), (latest.status, hash)) :: m
+      | _ -> m
+    ) []
+
+(* On-disk summary cache. Stored next to dag.json as
+   [pkgs_summary.v3.json], keyed by dag.json's mtime. The summary
+   is a small (~250 KB) JSON file mapping [(name, version) →
+   (status, hash)]; reading it skips the 25 MB JSON parse +
+   classify_from_layers walk that dominates [compute_snapshot_pkgs]
+   (~1 s each). Cache is invalidated by dag.json changing, by the
+   format version bumping, or by the summary file being deleted.
+   Layer state changes (failures flipping to ok via rebuild) are
+   NOT detected — the summary records the state at the moment of
+   first read; refresh by deleting the summary file if you need a
+   re-classify.
+
+   v3: aggregates status across build + compile + link + doc_all
+       node kinds. Older summaries only saw the build kind so a
+       package whose build was OK but whose docs cascaded showed
+       as success.
+   v2: added [h] field per entry for deep-linking.
+   v1: build status only. *)
+let summary_path snapshot_dir =
+  Fpath.(snapshot_dir / "pkgs_summary.v3.json")
+
+let dag_mtime snapshot_dir =
+  try Some (Unix.stat
+    (Fpath.to_string Fpath.(snapshot_dir / "dag.json"))).Unix.st_mtime
+  with _ -> None
+
+let read_summary snapshot_dir =
+  match Bos.OS.File.read (summary_path snapshot_dir) with
+  | Error _ -> None
+  | Ok s ->
+    try
+      let json = Yojson.Safe.from_string s in
+      let open Yojson.Safe.Util in
+      let dag_mtime_in_file =
+        try Some (json |> member "dag_mtime" |> to_number)
+        with _ -> None
+      in
+      let actual = dag_mtime snapshot_dir in
+      match dag_mtime_in_file, actual with
+      | Some a, Some b when abs_float (a -. b) < 0.5 ->
+        let pkgs =
+          json |> member "pkgs" |> to_list
+          |> List.map (fun e ->
+            let n = e |> member "n" |> to_string in
+            let v = e |> member "v" |> to_string in
+            let s = e |> member "s" |> to_string in
+            let h =
+              try e |> member "h" |> to_string with _ -> "" in
+            ((n, v), (s, h)))
+        in
+        Some pkgs
+      | _ -> None
+    with _ -> None
+
+let write_summary snapshot_dir pkgs =
+  let dag_mtime = dag_mtime snapshot_dir |> Option.value ~default:0.0 in
+  let json : Yojson.Safe.t = `Assoc [
+    "dag_mtime", `Float dag_mtime;
+    "pkgs", `List (List.map (fun ((n, v), (s, h)) ->
+      `Assoc [ "n", `String n; "v", `String v;
+               "s", `String s; "h", `String h ]) pkgs);
+  ] in
+  ignore (Bos.OS.File.write (summary_path snapshot_dir)
+            (Yojson.Safe.to_string json))
+
+(* [(name, version) → (status, build_hash)] with on-disk caching. *)
+let load_snapshot_pkgs ~os_dir snapshot_dir =
+  match read_summary snapshot_dir with
+  | Some pkgs -> pkgs
+  | None ->
+    let pkgs = compute_snapshot_pkgs ~os_dir snapshot_dir in
+    write_summary snapshot_dir pkgs;
+    pkgs
+
+(* Per-process memo of [load_snapshot_pkgs] keyed by snapshot dir.
+   Snapshot dirs are append-mostly + content-addressed by mtime, so
+   for a single page render a hit on the same dir always returns the
+   right value. Lifetime is the closure that owns the [Hashtbl] —
+   one per request. *)
+let make_load_snapshot_pkgs_memo ~os_dir =
+  let cache : (string,
+               ((string * string) * (string * string)) list) Hashtbl.t =
+    Hashtbl.create 32 in
+  fun snapshot_dir ->
+    let key = Fpath.to_string snapshot_dir in
+    match Hashtbl.find_opt cache key with
+    | Some v -> v
+    | None ->
+      let v = load_snapshot_pkgs ~os_dir snapshot_dir in
+      Hashtbl.add cache key v;
+      v
+
+(* Diff [m_old] against [m_new] (both [(name, version) → status]),
+   collapsing single-old-vs-single-new pairs of the same name into
+   a [Version_changed] row (typical for latest-only profiles where
+   a version bump replaces the prior version).
+
+   The two inputs are converted to Hashtbls up-front so the inner
+   per-key lookup is O(1); a profile with ~10 K packages has ~10 K
+   keys, so the prior [List.assoc_opt] approach was O(n²) per
+   diff and dominated the page render. *)
+let compute_diff_changes m_old m_new =
+  let to_table m =
+    let t = Hashtbl.create (List.length m * 2) in
+    List.iter (fun (k, v) -> Hashtbl.replace t k v) m;
+    t
+  in
+  let t_old = to_table m_old and t_new = to_table m_new in
+  let keys =
+    let s = Hashtbl.create (Hashtbl.length t_old + Hashtbl.length t_new) in
+    Hashtbl.iter (fun k _ -> Hashtbl.replace s k ()) t_old;
+    Hashtbl.iter (fun k _ -> Hashtbl.replace s k ()) t_new;
+    Hashtbl.fold (fun k () acc -> k :: acc) s [] |> List.sort compare
+  in
+  let classify =
+    List.filter_map (fun (n, v) ->
+      let old_e = Hashtbl.find_opt t_old (n, v) in
+      let new_e = Hashtbl.find_opt t_new (n, v) in
+      match old_e, new_e with
+      | None, None -> None
+      | None, Some (sn, hn) -> Some (n, `Added (v, sn, hn))
+      | Some _, None -> Some (n, `Removed v)
+      | Some (so, _), Some (sn, _) when so = sn -> None
+      | Some (so, _), Some (sn, hn) ->
+        Some (n, `Status_changed (v, so, sn, hn))
+    ) keys
+  in
+  let counts : (string, int ref * int ref) Hashtbl.t =
+    Hashtbl.create 16 in
+  List.iter (fun (n, k) ->
+    let r, a = try Hashtbl.find counts n
+      with Not_found ->
+        let cell = (ref 0, ref 0) in
+        Hashtbl.add counts n cell;
+        cell
+    in
+    match k with
+    | `Removed _ -> incr r
+    | `Added _ -> incr a
+    | `Status_changed _ -> ()
+  ) classify;
+  let paired : (string, string * string * string * string) Hashtbl.t =
+    Hashtbl.create 16 in
+  List.iter (fun (n, k) ->
+    match Hashtbl.find_opt counts n with
+    | Some (r, a) when !r = 1 && !a = 1 ->
+      let existing = Hashtbl.find_opt paired n in
+      (match k, existing with
+       | `Removed v_old, None ->
+         Hashtbl.add paired n (v_old, "", "", "")
+       | `Removed v_old, Some (_, v_new, s_new, h_new) ->
+         Hashtbl.replace paired n (v_old, v_new, s_new, h_new)
+       | `Added (v_new, s_new, h_new), None ->
+         Hashtbl.add paired n ("", v_new, s_new, h_new)
+       | `Added (v_new, s_new, h_new), Some (v_old, _, _, _) ->
+         Hashtbl.replace paired n (v_old, v_new, s_new, h_new)
+       | _ -> ())
+    | _ -> ()
+  ) classify;
+  List.filter_map (fun (n, k) ->
+    match k, Hashtbl.find_opt paired n with
+    | `Removed _, Some _ -> None  (* collapsed into the added row *)
+    | `Added (_, _, _), Some (v_old, v_new, s_new, h_new)
+      when v_old <> "" && v_new <> "" ->
+      Some (n, Version_changed (v_old, v_new, s_new, h_new))
+    | `Added (v, sn, hn), _ -> Some (n, Added (v, sn, hn))
+    | `Removed v, _ -> Some (n, Removed v)
+    | `Status_changed (v, so, sn, hn), _ ->
+      Some (n, Status_changed (v, so, sn, hn))
+  ) classify
+
+(* "Newly broken" filter for the recent-changes page. Keeps only
+   rows whose new status is failure or cascade — i.e. the on-call
+   view of what just stopped working. *)
+let is_change_failure = function
+  | Added (_, ("failure" | "cascade"), _) -> true
+  | Status_changed (_, _, ("failure" | "cascade"), _) -> true
+  | Version_changed (_, _, ("failure" | "cascade"), _) -> true
+  | _ -> false
+
+(* TyXML <tr> for one diff row. Used by both [snapshot_diff] and
+   [recent_changes]. Cells link out wherever they can:
+
+   - package name → [/profiles/<name>/p/<pkg>] (cross-snapshot
+     version index for this package);
+   - version → [/profiles/<name>/p/<pkg>/<ver>] (per-version
+     history page with rebuild info);
+   - status badge → docs (success) or build log (failure / cascade)
+     — the build log link prefers the OCurrent job page when we can
+     find the job_id, otherwise falls back to the raw [layer.log]
+     viewer at [/profiles/<name>/builds/<hash>/log]. *)
+let render_change_row ~profile_name ~html_dir (name, change) =
+  let pkg_link =
+    a ~a:[ a_href (Printf.sprintf "/profiles/%s/p/%s" profile_name name) ]
+      [ txt name ]
+  in
+  let ver_link v =
+    a ~a:[ a_href (Printf.sprintf "/profiles/%s/p/%s/%s"
+                     profile_name name v) ]
+      [ txt v ]
+  in
+  let status_cell ~version status hash =
+    let span = Templates.status_span status in
+    match status with
+    | "success" when version <> "" ->
+      (* Only link to docs when the rendered index.html is actually
+         on disk. voodoo can fail for individual packages even when
+         the build layer succeeded — the [<html_dir>/p/<pkg>/<ver>/]
+         tree just won't exist. Linking anyway gives a 404. *)
+      (match html_dir with
+       | Some h when docs_exist ~html_dir:h name version ->
+         a ~a:[ a_href (Printf.sprintf
+                          "/profiles/%s/docs/p/%s/%s/doc/index.html"
+                          profile_name name version) ]
+           [ span ]
+       | _ -> span)
+    | ("failure" | "cascade") when hash <> "" ->
+      let target = match job_id_for_hash hash with
+        | Some job_id -> "/job/" ^ job_id
+        | None ->
+          Printf.sprintf "/profiles/%s/builds/%s/log" profile_name hash
+      in
+      a ~a:[ a_href target ] [ span ]
+    | _ -> span
+  in
+  match change with
+  | Added (v, sn, hn) ->
+    tr [ td [ pkg_link ]; td [ ver_link v ];
+         td [ status_cell ~version:v sn hn ];
+         td [ em [ txt "added" ] ] ]
+  | Removed v ->
+    tr [ td [ pkg_link ]; td [ txt v ];
+         td []; td [ em [ txt "removed" ] ] ]
+  | Status_changed (v, so, sn, hn) ->
+    tr [ td [ pkg_link ]; td [ ver_link v ];
+         td [ Templates.status_span so; txt " → ";
+              status_cell ~version:v sn hn ];
+         td [ em [ txt "status changed" ] ] ]
+  | Version_changed (v_old, v_new, s_new, h_new) ->
+    tr [ td [ pkg_link ];
+         td [ ver_link v_old; txt " → "; ver_link v_new ];
+         td [ status_cell ~version:v_new s_new h_new ];
+         td [ em [ txt "version changed" ] ] ]
+
+let diff_table_thead =
+  thead [ tr [ th [ txt "Package" ];
+               th [ txt "Version" ];
+               th [ txt "Status" ];
+               th [ txt "Change" ] ] ]
 
 (* ── /profiles/<name>/snapshots/<key>/diff/<other> ────────────── *)
 
-(* Diff two snapshots' on-disk package state. Keyed by
-   [(name, version)] so that two versions of the same package
-   (e.g. [astring.0.8.3] AND [astring.0.8.5] both present in the
-   newer snapshot) each get their own row instead of collapsing
-   together. The previous version of this code keyed by name only
-   and silently lost the second-version-onwards. *)
+(* The diff page must ignore "pending" rows: their status isn't
+   final, so a pending entry would otherwise show as "removed" (when
+   the prior version was OK and the new one isn't ready yet) or
+   "added" (the mirror case). The right semantics is symmetric and
+   keyed by {b package name} — version bumps in a single profile go
+   together with pending while the new version builds, so dropping by
+   [(name, version)] still misclassifies the old version as removed.
+   If any version of a name is pending in either snapshot, every
+   version of that name is excluded from both sides until the
+   pending one resolves. Per-side counts are still surfaced in the
+   incomplete-snapshot banner so the reader knows which snapshot is
+   still settling. *)
+let pending_pkg_names pkgs =
+  List.fold_left (fun acc ((n, _), (st, _)) ->
+    if st = "pending" then n :: acc else acc) [] pkgs
+
 let snapshot_diff ~ctx name key_old key_new =
   object
     inherit Resource.t
@@ -673,69 +1259,23 @@ let snapshot_diff ~ctx name key_old key_new =
     method! private get web_ctx =
       let dir_old = Fpath.(snapshots_base ctx name / key_old) in
       let dir_new = Fpath.(snapshots_base ctx name / key_new) in
-      let split_pkg pkg_str =
-        match String.index_opt pkg_str '.' with
-        | None -> None
-        | Some i ->
-          let n = String.sub pkg_str 0 i in
-          let v = String.sub pkg_str (i + 1) (String.length pkg_str - i - 1) in
-          Some (n, v)
+      let os_dir = os_dir_for ~ctx name in
+      let html_dir = html_dir_for ~ctx name in
+      let load = make_load_snapshot_pkgs_memo ~os_dir in
+      let m_old_raw = load dir_old and m_new_raw = load dir_new in
+      let p_old = pending_pkg_names m_old_raw
+      and p_new = pending_pkg_names m_new_raw in
+      let pending_old = List.length p_old
+      and pending_new = List.length p_new in
+      let drop =
+        let t = Hashtbl.create (pending_old + pending_new) in
+        List.iter (fun n -> Hashtbl.replace t n ()) p_old;
+        List.iter (fun n -> Hashtbl.replace t n ()) p_new;
+        t
       in
-      let os_dir =
-        match Profile.load ~dir:ctx.profile_dir ~name with
-        | Ok profile ->
-          Some Fpath.(ctx.cache_dir / Profile.os_dir_name profile)
-        | Error _ -> None
-      in
-      (* Per-snapshot [(name, version) → status]. Sources from
-         dag.json + layer state so cached nodes still appear (the
-         legacy [packages/] dir is only the dispatched-this-run
-         subset). Falls back to history when dag.json is missing. *)
-      let aggregate (sts : Day11_lib.Cascade.status list) =
-        if List.exists (fun s -> s = Day11_lib.Cascade.Failed) sts
-        then "failure"
-        else if List.exists (function
-            | Day11_lib.Cascade.Cascade _ -> true | _ -> false) sts
-        then "cascade"
-        else if List.exists (fun s -> s = Day11_lib.Cascade.Pending) sts
-        then "pending"
-        else "success"
-      in
-      let load_pkgs dir =
-        match Day11_lib.Dag_marshal.read ~snapshot_dir:dir, os_dir with
-        | Ok entries, Some od ->
-          let table = Day11_lib.Cascade.classify_from_layers
-            ~os_dir:od entries in
-          let by_pkg : (string * string, Day11_lib.Cascade.status list)
-            Hashtbl.t = Hashtbl.create 4096 in
-          List.iter (fun (e : Day11_lib.Dag_marshal.entry) ->
-            match e.kind, split_pkg (OpamPackage.to_string e.pkg) with
-            | Build, Some (n, v) ->
-              let st = match Hashtbl.find_opt table e.hash with
-                | Some r -> r.status
-                | None -> Day11_lib.Cascade.Pending
-              in
-              let prev = try Hashtbl.find by_pkg (n, v)
-                with Not_found -> [] in
-              Hashtbl.replace by_pkg (n, v) (st :: prev)
-            | _ -> ()
-          ) entries;
-          Hashtbl.fold (fun key sts acc -> (key, aggregate sts) :: acc)
-            by_pkg []
-        | _ ->
-          (* Legacy fallback. *)
-          snapshot_packages dir
-          |> List.fold_left (fun m pkg ->
-            let entries = Day11_lib.History.read
-              ~packages_dir:Fpath.(dir / "packages") ~pkg_str:pkg in
-            match entries, split_pkg pkg with
-            | latest :: _, Some (n, v) ->
-              ((n, v), latest.status) :: m
-            | _ -> m
-          ) []
-      in
-      let m_old = load_pkgs dir_old in
-      let m_new = load_pkgs dir_new in
+      let strip = List.filter (fun ((n, _), _) -> not (Hashtbl.mem drop n)) in
+      let m_old = strip m_old_raw and m_new = strip m_new_raw in
+      let changes = compute_diff_changes m_old m_new in
       let crumbs = Templates.breadcrumbs [
         Some "/profiles", "Profiles";
         Some ("/profiles/" ^ name), name;
@@ -744,97 +1284,184 @@ let snapshot_diff ~ctx name key_old key_new =
           Templates.short_sha key_old;
         None, "diff " ^ Templates.short_sha key_new;
       ] in
-      let rows =
-        let keys = List.sort_uniq compare
-          (List.map fst m_old @ List.map fst m_new) in
-        (* First pass: classify each (name, version) into one of four
-           buckets and collect per-name counts so we can collapse
-           "removed X + added Y" into a single "changed" row when a
-           package name has exactly one of each (typical for latest-only
-           profiles where a version bump replaces the prior version). *)
-        let classify =
-          List.filter_map (fun (n, v) ->
-            let s_old = List.assoc_opt (n, v) m_old in
-            let s_new = List.assoc_opt (n, v) m_new in
-            match s_old, s_new with
-            | None, None -> None
-            | None, Some sn -> Some (n, `Added (v, sn))
-            | Some _, None -> Some (n, `Removed v)
-            | Some so, Some sn when so = sn -> None
-            | Some so, Some sn -> Some (n, `StatusChanged (v, so, sn))
-          ) keys
+      let incomplete_notice =
+        let mk label key n =
+          Printf.sprintf "%s snapshot %s is incomplete: %d package%s still pending"
+            label (Templates.short_sha key) n (if n = 1 then "" else "s")
         in
-        let counts : (string, int ref * int ref) Hashtbl.t =
-          Hashtbl.create 16 in
-        List.iter (fun (n, k) ->
-          let r, a = try Hashtbl.find counts n
-            with Not_found ->
-              let cell = (ref 0, ref 0) in
-              Hashtbl.add counts n cell;
-              cell
-          in
-          match k with
-          | `Removed _ -> incr r
-          | `Added _ -> incr a
-          | `StatusChanged _ -> ()
-        ) classify;
-        (* Pair up removed+added for names with exactly 1 of each. *)
-        let paired : (string, string * string * string) Hashtbl.t =
-          Hashtbl.create 16 in
-        List.iter (fun (n, k) ->
-          match Hashtbl.find_opt counts n with
-          | Some (r, a) when !r = 1 && !a = 1 ->
-            let existing = Hashtbl.find_opt paired n in
-            (match k, existing with
-             | `Removed v_old, None ->
-               Hashtbl.add paired n (v_old, "", "")
-             | `Removed v_old, Some (_, v_new, s_new) ->
-               Hashtbl.replace paired n (v_old, v_new, s_new)
-             | `Added (v_new, s_new), None ->
-               Hashtbl.add paired n ("", v_new, s_new)
-             | `Added (v_new, s_new), Some (v_old, _, _) ->
-               Hashtbl.replace paired n (v_old, v_new, s_new)
-             | _ -> ())
-          | _ -> ()
-        ) classify;
-        List.filter_map (fun (n, k) ->
-          match k, Hashtbl.find_opt paired n with
-          | `Removed _, Some _ -> None  (* collapsed into the added row *)
-          | `Added (_, _), Some (v_old, v_new, s_new)
-            when v_old <> "" && v_new <> "" ->
-            Some (tr [ td [ txt n ];
-                       td [ txt (v_old ^ " → " ^ v_new) ];
-                       td [ Templates.status_span s_new ];
-                       td [ em [ txt "version changed" ] ] ])
-          | `Added (v, sn), _ ->
-            Some (tr [ td [ txt n ]; td [ txt v ];
-                       td [ Templates.status_span sn ];
-                       td [ em [ txt "added" ] ] ])
-          | `Removed v, _ ->
-            Some (tr [ td [ txt n ]; td [ txt v ];
-                       td []; td [ em [ txt "removed" ] ] ])
-          | `StatusChanged (v, so, sn), _ ->
-            Some (tr [ td [ txt n ]; td [ txt v ];
-                       td [ Templates.status_span so; txt " → ";
-                            Templates.status_span sn ];
-                       td [ em [ txt "status changed" ] ] ])
-        ) classify
+        match pending_old, pending_new with
+        | 0, 0 -> []
+        | _, 0 -> [ p ~a:[ a_class [ "warn" ] ]
+                     [ txt (mk "Old" key_old pending_old) ] ]
+        | 0, _ -> [ p ~a:[ a_class [ "warn" ] ]
+                     [ txt (mk "New" key_new pending_new) ] ]
+        | _, _ ->
+          [ p ~a:[ a_class [ "warn" ] ]
+              [ txt (mk "Old" key_old pending_old) ];
+            p ~a:[ a_class [ "warn" ] ]
+              [ txt (mk "New" key_new pending_new) ] ]
       in
       let body =
-        if rows = [] then [ p [ em [ txt "No differences." ] ] ]
+        if changes = [] then [ p [ em [ txt "No differences." ] ] ]
         else [ table ~a:[ a_class [ "data" ] ]
-                 ~thead:(thead [ tr [ th [ txt "Package" ];
-                                      th [ txt "Version" ];
-                                      th [ txt "Status" ];
-                                      th [ txt "Change" ] ] ])
-                 rows ]
+                 ~thead:diff_table_thead
+                 (List.map (render_change_row ~profile_name:name ~html_dir) changes) ]
       in
       Context.respond_ok web_ctx ([
         Templates.style_block; crumbs;
         h2 [ txt (Printf.sprintf "%s — diff" name) ];
         p [ txt "From "; Templates.sha_span key_old;
             txt " to "; Templates.sha_span key_new ];
-      ] @ body)
+      ] @ incomplete_notice @ body)
+  end
+
+(* ── /profiles/<name>/recent[?n=K&page=N&status=fail|change] ──── *)
+
+(* Default window: how many snapshot pairs to walk on one page.
+   Each pair reads two snapshot dirs (memoized so consecutive pairs
+   share one load), so 20 pairs ≈ 21 unique snapshot reads. *)
+let recent_default_n = 20
+
+let recent_changes ~ctx name =
+  object
+    inherit Resource.t
+    val! can_get = `Viewer
+    method! private get web_ctx =
+      let req = Context.request web_ctx in
+      let uri = Cohttp.Request.uri req in
+      let n =
+        match Uri.get_query_param uri "n" with
+        | Some s -> (try max 1 (min 200 (int_of_string s))
+                     with _ -> recent_default_n)
+        | None -> recent_default_n
+      in
+      let page =
+        match Uri.get_query_param uri "page" with
+        | Some s -> (try max 1 (int_of_string s) with _ -> 1)
+        | None -> 1
+      in
+      let status_filter =
+        match Uri.get_query_param uri "status" with
+        | Some "fail" -> `Fail
+        | _ -> `Change
+      in
+      let snaps = list_snapshots_newest_first ctx name in
+      let total_pairs = max 0 (List.length snaps - 1) in
+      let n_pages = max 1 ((total_pairs + n - 1) / n) in
+      let page = min page n_pages in
+      let start_pair = (page - 1) * n in
+      (* For pairs [start_pair .. start_pair + n - 1] we need
+         snapshots [start_pair .. start_pair + n] (one extra for
+         the older end of the last pair). *)
+      let visible_snaps =
+        snaps
+        |> List.filteri (fun i _ ->
+          i >= start_pair && i <= start_pair + n)
+      in
+      let os_dir = os_dir_for ~ctx name in
+      let html_dir = html_dir_for ~ctx name in
+      let load = make_load_snapshot_pkgs_memo ~os_dir in
+      let mtime_str dir =
+        try
+          let s = Unix.stat (Fpath.to_string dir) in
+          let tm = Unix.gmtime s.st_mtime in
+          Printf.sprintf "%04d-%02d-%02d %02d:%02d UTC"
+            (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
+            tm.tm_hour tm.tm_min
+        with _ -> "—"
+      in
+      (* Walk visible snapshots newest-to-oldest. Each adjacent
+         pair (dir_new, dir_old) becomes a section; sections with
+         no changes after filtering are skipped entirely. *)
+      let rec pairs acc = function
+        | dir_new :: (dir_old :: _ as rest) ->
+          pairs ((dir_new, dir_old) :: acc) rest
+        | _ -> List.rev acc
+      in
+      let sections =
+        pairs [] visible_snaps
+        |> List.filter_map (fun (dir_new, dir_old) ->
+          let changes = compute_diff_changes (load dir_old) (load dir_new) in
+          let changes = match status_filter with
+            | `Change -> changes
+            | `Fail -> List.filter (fun (_, c) -> is_change_failure c) changes
+          in
+          if changes = [] then None
+          else
+            let key_new = Fpath.basename dir_new in
+            let key_old = Fpath.basename dir_old in
+            let header =
+              h3 [
+                a ~a:[ a_href (Printf.sprintf
+                                 "/profiles/%s/snapshots/%s" name key_new) ]
+                  [ Templates.sha_span key_new ];
+                txt (" — " ^ mtime_str dir_new ^ " ");
+                a ~a:[ a_href (Printf.sprintf
+                                 "/profiles/%s/snapshots/%s/diff/%s"
+                                 name key_old key_new) ]
+                  [ txt "(full diff)" ];
+              ]
+            in
+            let table_el =
+              table ~a:[ a_class [ "data" ] ]
+                ~thead:diff_table_thead
+                (List.map (render_change_row ~profile_name:name ~html_dir) changes)
+            in
+            Some [ header; table_el ])
+        |> List.concat
+      in
+      let crumbs = Templates.breadcrumbs [
+        Some "/profiles", "Profiles";
+        Some ("/profiles/" ^ name), name;
+        None, "Recent changes";
+      ] in
+      let filter_link ?(label = "") which =
+        let href = Printf.sprintf "/profiles/%s/recent?n=%d&status=%s"
+          name n which in
+        let lbl = if label = "" then which else label in
+        if (which = "change" && status_filter = `Change)
+           || (which = "fail" && status_filter = `Fail)
+        then b [ txt lbl ]
+        else a ~a:[ a_href href ] [ txt lbl ]
+      in
+      let filters = p ~a:[ a_class [ "crumbs" ] ] [
+        txt "Show: ";
+        filter_link ~label:"all changes" "change";
+        txt " · ";
+        filter_link ~label:"only newly failing" "fail";
+      ] in
+      let pager =
+        if n_pages <= 1 then []
+        else
+          let link p_num label =
+            a ~a:[ a_href (Printf.sprintf
+                             "/profiles/%s/recent?n=%d&status=%s&page=%d"
+                             name n
+                             (match status_filter with
+                              | `Change -> "change" | `Fail -> "fail")
+                             p_num) ]
+              [ txt label ]
+          in
+          [ div ~a:[ a_class [ "pager" ] ]
+              (List.concat [
+                (if page > 1 then [ link (page - 1) "‹ Newer"; txt " " ]
+                 else []);
+                [ txt (Printf.sprintf "Page %d of %d (%d snapshot pairs)"
+                         page n_pages total_pairs) ];
+                (if page < n_pages then [ txt " "; link (page + 1) "Older ›" ]
+                 else []);
+              ]) ]
+      in
+      let body =
+        if sections = [] then
+          [ p [ em [ txt "No changes in this window." ] ] ]
+        else sections
+      in
+      Context.respond_ok web_ctx
+        ([ Templates.style_block; crumbs;
+           h2 [ txt (name ^ " — recent changes") ];
+           filters ]
+         @ body @ pager)
   end
 
 (* ── /profiles/<name>/p/<pkg> ─────────────────────────────────── *)
@@ -889,9 +1516,13 @@ let package_version ~ctx name pkg ver =
     method! private get web_ctx =
       let pkg_str = pkg ^ "." ^ ver in
       let snaps = list_snapshots_newest_first ctx name in
+      (* [read_latest] dedupes by build_hash: one entry per unique
+         (build/compile/doc_all/link) layer hash, keeping the most
+         recent. Without dedup the table grows linearly with retries
+         and snapshots, mostly repeats. *)
       let entries = List.concat_map (fun snap ->
         let pdir = Fpath.(snap / "packages") in
-        Day11_lib.History.read ~packages_dir:pdir ~pkg_str
+        Day11_lib.History.read_latest ~packages_dir:pdir ~pkg_str
       ) snaps in
       let crumbs = Templates.breadcrumbs [
         Some "/profiles", "Profiles";
@@ -937,16 +1568,24 @@ let package_version ~ctx name pkg ver =
                                    th [ txt "Error" ] ] ])
               history_rows ]
       in
-      let docs_link =
-        a ~a:[ a_href (Printf.sprintf
-                         "/profiles/%s/docs/p/%s/%s/doc/index.html"
-                         name pkg ver) ]
-          [ txt "Open rendered docs" ]
+      let docs_para =
+        let docs_present =
+          match html_dir_for ~ctx name with
+          | Some h -> docs_exist ~html_dir:h pkg ver
+          | None -> false
+        in
+        if docs_present then
+          p [ a ~a:[ a_href (Printf.sprintf
+                               "/profiles/%s/docs/p/%s/%s/doc/index.html"
+                               name pkg ver) ]
+                [ txt "Open rendered docs" ] ]
+        else
+          p [ em [ txt "No rendered docs for this version." ] ]
       in
       Context.respond_ok web_ctx ([
         Templates.style_block; crumbs;
         h2 [ txt pkg_str ];
-        p [ docs_link ];
+        docs_para;
         h3 [ txt "History" ];
       ] @ history_block)
   end
