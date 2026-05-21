@@ -92,17 +92,7 @@ module Make_op (L : LABEL) = struct
     let layer = Day11_layer.Layer.of_hash ~os_dir:ctx.os_dir key.hash in
     Lwt_eio.run_eio @@ fun () ->
     let cached_ok = match Day11_layer.Meta.load ctx.env (Day11_layer.Layer.meta_path layer) with
-      | Ok meta when meta.exit_status = 0 ->
-        (* For doc layers, validate dep compile layers are present *)
-        if Day11_doc.Doc_build.validate_cached_doc ctx.env
-             ~os_dir:ctx.os_dir (Day11_layer.Layer.dir layer)
-        then true
-        else begin
-          Current.Job.log job "Invalidating %s: missing dep compile layers"
-            key.hash;
-          ignore (Bos.OS.Dir.delete ~recurse:true (Day11_layer.Layer.dir layer));
-          false
-        end
+      | Ok meta when meta.exit_status = 0 -> true
       | Ok _ ->
         Current.Job.log job "Clearing failed layer %s" key.hash;
         ignore (Bos.OS.Dir.delete ~recurse:true (Day11_layer.Layer.dir layer));

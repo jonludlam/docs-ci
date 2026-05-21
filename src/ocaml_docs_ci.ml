@@ -3,7 +3,16 @@ module Profile = Day11_batch.Profile
 let setup_log default_level =
   Prometheus_unix.Logging.init ?default_level ();
   Mirage_crypto_rng_unix.initialize (module Mirage_crypto_rng.Fortuna);
-  Memtrace.trace_if_requested ~context:"ocaml-docs-ci" ()
+  Memtrace.trace_if_requested ~context:"ocaml-docs-ci" ();
+  (* Eio strips OCaml backtraces by the time uncaught exns surface in
+     the supervisor. Hook [set_uncaught_exception_handler] so the
+     runtime prints the {e raw} backtrace from the actual throw site
+     before Eio re-raises. *)
+  Printexc.record_backtrace true;
+  Printexc.set_uncaught_exception_handler (fun exn raw_bt ->
+    Fmt.epr "FATAL: %s@.%s@."
+      (Printexc.to_string exn)
+      (Printexc.raw_backtrace_to_string raw_bt))
 
 let program_name = "ocaml-docs-ci"
 
@@ -39,7 +48,8 @@ let load_profiles ~profile_dir names : Day11_batch.Profile.t list =
   ) names
 
 let main () current_config github_auth mode profiles_arg profile_dir_arg
-    cache_dir_arg remotes_arg cores_per_build overcommit config : unit =
+    cache_dir_arg remotes_arg pin_overlays_arg cores_per_build overcommit
+    config : unit =
   let profile_dir =
     Fpath.v (match profile_dir_arg with
       | Some d -> d
@@ -66,6 +76,19 @@ let main () current_config github_auth mode profiles_arg profile_dir_arg
     Logs.app (fun f -> f "Maintaining %d remote opam repo%s"
       (List.length remote_specs)
       (if List.length remote_specs = 1 then "" else "s"));
+  let pin_overlay_specs =
+    List.map (fun arg ->
+      match Docs_ci_lib.Github_pin_overlay.spec_of_arg arg with
+      | Ok s -> s
+      | Error (`Msg e) ->
+        Fmt.epr "error: %s@." e;
+        exit 2
+    ) pin_overlays_arg
+  in
+  if pin_overlay_specs <> [] then
+    Logs.app (fun f -> f "Maintaining %d github pin overlay%s"
+      (List.length pin_overlay_specs)
+      (if List.length pin_overlay_specs = 1 then "" else "s"));
   let names =
     match profiles_arg with
     | [] ->
@@ -114,6 +137,20 @@ let main () current_config github_auth mode profiles_arg profile_dir_arg
       ~schedule:remote_schedule ~url:s.url ~path:s.path in
     Hashtbl.replace remote_commits (Fpath.to_string s.path) commit
   ) remote_specs;
+  (* Github-pin overlays: each spec generates an opam-repo overlay
+     under [<path>/repo/] from upstream HEAD on the same hourly
+     schedule. Profiles reference the overlay path the same way they
+     reference [--remote] paths — and since the overlay is itself a
+     git repo whose SHA changes when (and only when) upstream moves,
+     [Profile_ctx_loader] picks up the change without any further
+     plumbing. *)
+  List.iter (fun (s : Docs_ci_lib.Github_pin_overlay.spec) ->
+    let commit = Docs_ci_lib.Github_pin_overlay.maintain_commit
+      ~schedule:remote_schedule ~url:s.url ~path:s.path in
+    let overlay_path =
+      Fpath.to_string (Fpath.(s.path / "repo")) in
+    Hashtbl.replace remote_commits overlay_path commit
+  ) pin_overlay_specs;
   let engine =
     Current.Engine.create ~config:current_config (fun () ->
       Docs_ci_pipelines.Docs.v ~config
@@ -183,6 +220,21 @@ let remotes_arg =
              profiles reference $(b,PATH) as a regular local repo."
        ~docv:"URL=PATH" [ "remote" ]
 
+let pin_overlays_arg =
+  Arg.value
+  @@ Arg.opt_all Arg.string []
+  @@ Arg.info
+       ~doc:"Track a github URL and republish its $(b,*.opam) files \
+             as a synthetic opam-repo overlay. Repeatable. Format: \
+             $(b,URL=PATH). On the same hourly schedule as $(b,--remote), \
+             ocaml-docs-ci clones $(b,URL) into $(b,PATH/upstream/), \
+             rewrites each $(b,*.opam) with $(i,version:) set to \
+             $(i,<latest-tag>+master.<YYYYMMDD>.<sha7>) and $(i,src:) \
+             pointing at the pinned commit, and commits the result to \
+             $(b,PATH/repo/) (its own git repo). Profiles reference \
+             $(b,PATH/repo) as a regular local repo."
+       ~docv:"URL=PATH" [ "github-pin-overlay" ]
+
 let cores_per_build_arg =
   Arg.value
   @@ Arg.opt Arg.(some int) None
@@ -223,6 +275,7 @@ let cmd =
       $ profile_dir_arg
       $ cache_dir_arg
       $ remotes_arg
+      $ pin_overlays_arg
       $ cores_per_build_arg
       $ overcommit_arg
       $ Docs_ci_lib.Config.cmdliner)

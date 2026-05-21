@@ -125,13 +125,14 @@ let v_for_profile ~config ~eio_env ~cache_dir:_ ?cpu_slots
       ~opam_commit:(List.hd tracking_commits) tracked
   in
   let* solutions in
-  (* Drop solutions whose build_deps graph contains a cycle. The
-     solver's backtracking can legitimately produce a cyclic solution
-     when the target's own constraints corner it (e.g. [owi.0.2] with
-     [ocaml < 5.2] ending up on [ppxlib.0.33.0+ox + ppxlib_jane.v0.17]
-     in the oxcaml profile — the oxcaml overlay's patched ppxlib adds
-     a [ppxlib_jane] back-edge). [build_dag] can't produce a sensible
-     node for such a target, so filter them out up-front and log. *)
+  (* Drop solutions whose [build_deps] graph contains a cycle (the
+     DAG-construction recursion in [Dag.build_dag] only memoises
+     {e after} recursing, so a build-deps cycle stack-overflows it).
+     We do NOT filter on cyclic [doc_deps]: opam routinely produces
+     post-style cycles via [{post & with-doc}] and [x-extra-doc-deps]
+     guards, and filtering them would drop nearly every package.
+     [Day11_solution.Deps.transitive_deps] is cycle-safe (uses a
+     [visiting] guard) so all the doc-deps walks tolerate them. *)
   let solutions, dropped =
     List.partition (fun (s : Day11_solver.solution) ->
       not (Day11_solution.Deps.has_cycle s.solve_result.build_deps))
@@ -144,7 +145,7 @@ let v_for_profile ~config ~eio_env ~cache_dir:_ ?cpu_slots
 
   (* 3) Build DAG — reuse the shared hash cache from the ctx. *)
   let build_solutions = List.map (fun (s : Day11_solver.solution) ->
-    (s.target, s.solve_result.build_deps)
+    (s.target, s.solve_result.build_deps, s.solve_result.doc_deps)
   ) solutions in
   let nodes = Day11_opam_build.Dag.build_dag ctx.hash_cache
     ~base_hash:ctx.base.hash build_solutions in
