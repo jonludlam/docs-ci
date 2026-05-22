@@ -10,6 +10,12 @@ module SolveOp = struct
     np : int;
     profile_name : string;
     ocaml_version : OpamPackage.t option;
+    pinned_versions : OpamPackage.t list;
+    (** Hard version pins fed into the solver as [(`Eq, v)]
+        constraints. Empty list = no extra pins beyond
+        [ocaml_version]. Surfaced via [Profile.pinned_versions];
+        used to propagate a specific +ox / variant flavour
+        through transitive deps. *)
     cache_dir : Fpath.t;
     (** Used to derive the per-snapshot [solutions/] directory
         ([snapshot_dir/solutions/<pkg>.json]). The on-disk cache lets
@@ -28,10 +34,15 @@ module SolveOp = struct
       (* String form — empty means unpinned. Including this in the
          cache key ensures a profile compiler change invalidates
          prior solves. *)
+      pinned_versions : string list;
+      (* Same shape as [ocaml_version] — string-form pins included
+         in the digest so a profile pin change invalidates prior
+         solves. *)
     }
 
     let digest t =
-      t.commit ^ "@" ^ t.repos_digest ^ "|" ^ t.ocaml_version ^ ":" ^
+      t.commit ^ "@" ^ t.repos_digest ^ "|" ^ t.ocaml_version ^
+      "|" ^ String.concat "," t.pinned_versions ^ ":" ^
       (List.map OpamPackage.to_string t.targets
        |> String.concat ",")
   end
@@ -152,6 +163,7 @@ module SolveOp = struct
       let results =
         Day11_solver_pool.Solver_pool.solve_many ~sw ctx.env
           ?ocaml_version:ctx.ocaml_version
+          ~constraints:ctx.pinned_versions
           ~on_progress:(fun ~done_count ~total ->
             Current.Job.log job "Solving: %d/%d" done_count total)
           ~np:ctx.np ~repos:ctx.repos_with_shas uncached
@@ -187,6 +199,7 @@ let repos_digest repos =
   Digest.to_hex (Digest.string (String.concat "\n" sorted))
 
 let solve ~env ~np ~profile_name ~repos_with_shas ?ocaml_version
+    ?(pinned_versions = [])
     ~cache_dir
     ~(opam_commit : Current_git.Commit.t Current.t)
     (tracked : Track.t list Current.t) =
@@ -200,13 +213,16 @@ let solve ~env ~np ~profile_name ~repos_with_shas ?ocaml_version
   let ocaml_version_str = match ocaml_version with
     | Some pkg -> OpamPackage.to_string pkg
     | None -> "" in
+  let pinned_strs = List.map OpamPackage.to_string pinned_versions in
   Solver_cache.get
-    { repos_with_shas; env; np; profile_name; ocaml_version; cache_dir }
+    { repos_with_shas; env; np; profile_name; ocaml_version;
+      pinned_versions; cache_dir }
     SolveOp.Key.{
       targets;
       commit = commit_hash;
       repos_digest = repos_digest repos_with_shas;
       ocaml_version = ocaml_version_str;
+      pinned_versions = pinned_strs;
     }
   |> Current.Primitive.map_result (Result.map (fun v ->
     List.filter_map (fun (pkg_str, json_str) ->
