@@ -112,11 +112,21 @@ let v_for_profile ~config ~eio_env ~cache_dir:_ ?cpu_slots
      (e.g. [ocaml-variants.5.2.0+ox] for the oxcaml profile). Without
      this the solver falls back to mainline ocaml-base-compiler and
      picks mainline dune/ppxlib/etc, ignoring oxcaml overlays. *)
+  let pinned_versions =
+    List.filter_map (fun s ->
+      try Some (OpamPackage.of_string s)
+      with _ ->
+        Logs.warn (fun m -> m "[%s] ignoring malformed pinned_versions entry %S"
+          profile.name s);
+        None
+    ) profile.pinned_versions
+  in
   let solutions =
     Day11_solver.solve ~env ~np:(Config.jobs config)
       ~profile_name:profile.name
       ~repos_with_shas:ctx.repos_with_shas
       ?ocaml_version:ctx.ocaml_version
+      ~pinned_versions
       ~cache_dir:ctx.cache_dir
       (* [opam_commit] drives the solver's re-run trigger and goes
          into the cache key. Pick mainline (first entry) — overlay
