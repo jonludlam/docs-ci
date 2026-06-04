@@ -1,4 +1,4 @@
-(lang dune 3.6)
+(lang dune 3.20)
 
 (using mdx 0.3)
 
@@ -12,6 +12,11 @@
 
 (authors "lucas@tarides.com")
 (maintainers "Navin Keswani <navin@novemberkilo.io>" "Tim McGilchrist <timmcgil@gmail.com>")
+
+(package
+ (name day11)
+ (synopsis "OCaml package build and documentation system")
+ (allow_empty))
 
 (package
  (name ocaml-docs-ci)

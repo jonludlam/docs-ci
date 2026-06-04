@@ -1,146 +1,70 @@
-version: "3.8"
+# ocaml-docs-ci, post-day11.
+#
+# Two services:
+#   - daemon — runs the ocaml-docs-ci binary. Drives runc directly
+#     to build each opam package in a sandboxed container, so it
+#     needs --privileged plus access to the host's runc (the
+#     debian-12 runc shipped in the image is enough on most kernels;
+#     swap to a bind-mount of /usr/bin/runc if the host's is newer).
+#   - web — nginx, serving rendered HTML from the day11 cache
+#     directly and reverse-proxying everything else (dashboard, job
+#     logs, snapshot pages) to the daemon at :8080.
+#
+# Volumes use bind mounts so the host paths in profile JSON
+# ([opam_repositories], [html_dir], [.day11/overlays/.../repo])
+# resolve unchanged inside the daemon container.
+
 services:
-
-  scheduler:
-    image: ocurrent/ocluster-scheduler:live
-    command:
-      - --secrets-dir=/capnp-secrets
-      - --capnp-secret-key-file=/capnp-secrets/key.pem
-      - --capnp-listen-address=tcp:0.0.0.0:9000
-      - --capnp-public-address=tcp:scheduler:9000
-      - --pools=linux-x86_64
-      - --state-dir=/var/lib/ocluster-scheduler
-      - --default-clients=ocaml-docs-ci
-    init: true
-    ports:
-      - "9000:9000"
-    volumes:
-      - 'scheduler-data:/var/lib/ocluster-scheduler'
-      - 'capnp-secrets:/capnp-secrets'
-
-  worker:
-    # image: ocurrent/ocluster-worker:live
+  daemon:
     build:
-      dockerfile: docker/worker/Dockerfile
       context: .
-    command:
-      - --connect=/capnp-secrets/pool-linux-x86_64.cap
-      - --name=ocluster-worker
-      - --allow-push=ocurrentbuilder/staging,ocurrent/opam-staging
-      - --capacity=1
-      - --state-dir=/var/lib/ocluster
-      - --obuilder-store=rsync:/var/cache/obuilder
-      - --rsync-mode=hardlink
-      - --obuilder-healthcheck=0
-      - --verbose
-    init: true
-    privileged: true            # required for the Docker in Docker container to work
-    restart: on-failure         # (wait for the scheduler to write the pool cap)
-    volumes:
-      - 'worker-data:/var/lib/ocluster'
-      - '/var/run/docker.sock:/var/run/docker.sock'
-      - 'capnp-secrets:/capnp-secrets:ro'
-    environment:
-      - DOCKER_BUILDKIT=1
-      - DOCKER_CLI_EXPERIMENTAL=enabled
-
-  init:
-    build:
-      dockerfile: docker/init/Dockerfile
-      context: .
-    environment:
-      - KEYFILE=/ssh/id_ed25519
-      - KEYTYPE=ed25519
-    volumes:
-      - 'ssh-credentials:/ssh/'
-
-  storage-server:
-    build:
-      dockerfile: docker/storage/Dockerfile
-      context: .
-    depends_on:
-      - "init"
-    ports:
-      - "2222:22"
-    volumes:
-      - 'ssh-credentials:/root/.ssh/'
-      - 'docs-data:/data'
-
-  http-raw-live-website:
-    restart: on-failure
-    image: nginx
-    command: >
-      bash -c "rm -rf /usr/share/nginx/html
-      && ln -s /data/html-live/html-raw /usr/share/nginx/html
-      && nginx -g 'daemon off;'"
-    ports:
-        - "8002:8000"
-    volumes:
-      - 'docs-data:/data/'
-
-  http-raw-current-website:
-    restart: on-failure
-    image: nginx
-    command: >
-      bash -c "rm -rf /usr/share/nginx/html
-      && ln -s /data/html-current/html-raw /usr/share/nginx/html
-      && nginx -g 'daemon off;'"
-    ports:
-        - "8003:8000"
-    volumes:
-      - 'docs-data:/data/'
-
-  ocaml-docs-ci:
-    # Use published docker container
-    # image: ocurrent/docs-ci:live
-    # Build from local sources
-    build:
       dockerfile: Dockerfile
-      context: .
-    depends_on:
-      - "storage-server"
-      - "scheduler"
-      - "worker"
-    command:
-      - --confirm=above-average
-      - --ocluster-submission=/capnp-secrets/submit-ocaml-docs-ci.cap
-      - --ssh-host=172.17.0.1 # ocluster jobs are spawned by the host's docker, so they don't have
-                              # access to this docker-compose's network. therefore we have to get
-                              # to the storage server through the host network.
-      - --ssh-port=2222
-      - --ssh-user=root
-      - --ssh-privkey=/ssh/id_ed25519
-      - --ssh-pubkey=/ssh/id_ed25519.pub
-      - --ssh-folder=/data
-      # - --voodoo-repo=""      # Voodoo repository to use
-      # - --voodoo-branch=""    # Git branch from the voodoo repository
-      - --jobs=6
-      - --limit=1               # Only build the most recent version of each package
-      - --filter=capnp-rpc      # NOTE Only build capnp-rpc documentation.
-      - --capnp-listen-address=tcp:0.0.0.0:9080
-      - --capnp-public-address=tcp:localhost:9080
-      - --migration-path=/migrations
-    init: true
-    restart: on-failure         # (wait for the scheduler to write the submission cap)
+      args:
+        # Set to the host user that owns the bind-mounted [~/.day11/]
+        # tree (default 1000). Easiest is to drop a [.env] next to
+        # this file with [UID=$(id -u)] / [GID=$(id -g)].
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    restart: unless-stopped
+    privileged: true
+    init: false   # dumb-init already in the image
     ports:
-      - 9080:9080
-      - 8080:8080 # HTTP UI
+      - "8080:8080"
+    command:
+      - --profiles=ocaml-odoc-master,oxcaml
+      - --remote=https://github.com/ocaml/opam-repository.git=${HOME}/ocaml/opam-repository
+      - --remote=https://github.com/jonludlam/opam-repository-oxcaml=${HOME}/oxcaml/opam-repository
+      - --github-pin-overlay=https://github.com/ocaml/odoc=${HOME}/.day11/overlays/odoc-master
+      - --jobs=40
+      - --cores-per-build=4
+      - --overcommit=2.5
+      - --port=8080
     volumes:
-      - 'ocaml-docs-ci-data:/var/lib/ocurrent'
-      - "capnp-secrets:/capnp-secrets"
-      - 'ssh-credentials:/ssh/'
+      # Bind-mount the host directories at their host paths so the
+      # absolute paths recorded in profile JSON files still resolve.
+      - ${HOME}/.day11:${HOME}/.day11
+      - ${HOME}/ocaml/opam-repository:${HOME}/ocaml/opam-repository
+      - ${HOME}/oxcaml/opam-repository:${HOME}/oxcaml/opam-repository
+      # OCurrent state (sqlite + per-job logs). Mounted under
+      # /var/lib/ocurrent matching the image's WORKDIR.
+      - ocurrent-data:/var/lib/ocurrent
+      # The daemon's per-build containers live under /tmp/day11_run_*;
+      # use an overlay-friendly tmpfs scoped to this container.
+      - /tmp/day11:/tmp/day11
     environment:
       - OCAMLRUNPARAM=b
-      - CI_PROFILE=dev
-    x-develop:
-      watch:
-        - action: rebuild
-          path: ./src
+      - HOME=${HOME}
+
+  web:
+    image: nginx:alpine
+    restart: unless-stopped
+    depends_on:
+      - daemon
+    ports:
+      - "80:80"
+    volumes:
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${HOME}/.day11/cache/debian-bookworm-x86_64:/data:ro
 
 volumes:
-  ocaml-docs-ci-data:
-  worker-data:
-  scheduler-data:
-  capnp-secrets:
-  docs-data:
-  ssh-credentials:
+  ocurrent-data:
