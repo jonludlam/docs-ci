@@ -1,0 +1,39 @@
+{0 day11-layer}
+
+Generic layered storage on disk. A layer is a directory containing a
+[fs/] tree (the filesystem delta) plus metadata files.
+
+The core type {!Day11_layer.Layer} represents a layer on disk via its
+content hash and directory path, with helpers to check existence and
+status. {!Day11_layer.Meta} serializes per-layer metadata ([layer.json])
+covering exit status, parent hashes, timing, and disk usage.
+{!Day11_layer.Dir} owns the naming convention that derives directory
+names from content hashes. {!Day11_layer.Base} represents the
+foundational rootfs image at the bottom of every overlay stack.
+{!Day11_layer.Hash} computes content-addressed cache keys from layer inputs.
+{!Day11_layer.Stack} merges multiple layers into one directory via hardlinked
+copies, and plans overlayfs lowerdir layouts that fit kernel page-size
+limits. {!Day11_layer.Scan} enumerates layers from the on-disk cache.
+{!Day11_layer.Import} extracts layer filesystems from Docker images.
+{!Day11_layer.Last_used} maintains a cheap mtime-based sentinel for LRU
+eviction. {!Day11_layer.Symlinks} maintains per-identifier tracking
+symlinks for layer discovery.
+
+Depends on {!day11-sys} for subprocess and sudo access. Has no opam
+or package-domain knowledge — domain-specific metadata lives in
+sidecar files owned by higher libraries.
+
+{1 Modules}
+
+{!modules:
+Day11_layer.Layer
+Day11_layer.Meta
+Day11_layer.Dir
+Day11_layer.Base
+Day11_layer.Hash
+Day11_layer.Stack
+Day11_layer.Scan
+Day11_layer.Import
+Day11_layer.Last_used
+Day11_layer.Symlinks
+}

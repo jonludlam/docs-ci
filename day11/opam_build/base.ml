@@ -1,0 +1,335 @@
+let src = Logs.Src.create "day11.build.base" ~doc:"Base image management"
+module Log = (val Logs.src_log src)
+
+let hash ~image = Day11_layer.Hash.base_hash ~image
+
+let build_hash ~os_distribution ~os_version ~arch:_ ?digest () =
+  match digest with
+  | Some d -> hash ~image:d
+  | None ->
+    let image = Printf.sprintf "%s:%s" os_distribution os_version in
+    hash ~image
+
+let make_base_layer ~image ~base_dir : Day11_layer.Base.t =
+  { hash = hash ~image; dir = base_dir; image }
+
+let digest_file base_dir = Fpath.(base_dir / "base-digest")
+
+let save_digest base_dir digest =
+  ignore (Bos.OS.File.write (digest_file base_dir) digest)
+
+let load_digest base_dir =
+  match Bos.OS.File.read (digest_file base_dir) with
+  | Ok d -> Some (String.trim d)
+  | Error _ -> None
+
+let ensure ~sw env ~cache_dir ~image =
+  let base_dir = Fpath.(cache_dir / "base") in
+  let marker = Fpath.(base_dir / "fs" / "usr") in
+  if Bos.OS.Dir.exists marker |> Result.get_ok then
+    Ok (make_base_layer ~image ~base_dir)
+  else
+    match Day11_layer.Import.from_docker ~sw env ~image ~layer_dir:base_dir with
+    | Ok () -> Ok (make_base_layer ~image ~base_dir)
+    | Error _ as e -> e
+
+let platform = function
+  | "x86_64" | "amd64" -> "linux/amd64"
+  | "aarch64" -> "linux/arm64"
+  | "armv7l" -> "linux/arm/v7"
+  | "i386" | "i486" | "i586" | "i686" -> "linux/386"
+  | "ppc64le" -> "linux/ppc64le"
+  | "riscv64" -> "linux/riscv64"
+  | "s390x" -> "linux/s390x"
+  | arch -> "linux/" ^ arch
+
+let opam_arch = function
+  | "x86_64" | "amd64" -> "x86_64"
+  | "aarch64" -> "aarch64"
+  | "armv7l" -> "armhf"
+  | "i386" | "i486" | "i586" | "i686" -> "i686"
+  | arch -> arch
+
+(* Separate Dockerfile just for building opam-build *)
+let generate_opam_build_dockerfile ~arch ~local_opam_build =
+  let open Dockerfile in
+  let base_image = "debian:bookworm" in
+  let plat = platform arch in
+  let get_opam =
+    from ~platform:plat base_image
+    @@ run "apt update && apt install -y curl build-essential git unzip bubblewrap"
+    @@ run "curl -fsSL https://github.com/ocaml/opam/releases/download/2.4.1/opam-2.4.1-%s-linux -o /usr/local/bin/opam && chmod +x /usr/local/bin/opam"
+         (opam_arch arch)
+  in
+  let get_source =
+    if local_opam_build then
+      copy ~src:[ "opam-build" ] ~dst:"/tmp/opam-build" ()
+    else
+      run "git clone --depth 1 --branch apt-update https://github.com/jonludlam/opam-build.git /tmp/opam-build"
+  in
+  get_opam
+  @@ run "opam init --disable-sandboxing -a --bare -y"
+  @@ get_source
+  @@ workdir "/tmp/opam-build"
+  @@ run "opam switch create . 5.3.0 --deps-only -y"
+  @@ run "opam exec -- dune build --release"
+  @@ run "install -m 755 _build/default/bin/main.exe /usr/local/bin/opam-build"
+
+let generate_dockerfile ~os_distribution ~os_version ~arch ~uid ~gid
+    ~repo_count ~has_opam_build_bin ?digest () =
+  let open Dockerfile in
+  let base_image = match digest with
+    | Some d -> Printf.sprintf "%s@%s" os_distribution d
+    | None -> Printf.sprintf "%s:%s" os_distribution os_version
+  in
+  let plat = platform arch in
+  (* Stage 1: download opam binary *)
+  let stage1 =
+    from ~platform:plat ~alias:"opam-builder" base_image
+    @@ run "apt update && apt install -y curl"
+    @@ run "curl -fsSL https://github.com/ocaml/opam/releases/download/2.4.1/opam-2.4.1-%s-linux -o /usr/local/bin/opam && chmod +x /usr/local/bin/opam"
+         (opam_arch arch)
+  in
+  (* Final stage *)
+  let final =
+    from ~platform:plat base_image
+    @@ run "apt update && apt upgrade -y"
+    @@ run "apt install build-essential unzip bubblewrap git sudo curl rsync -y"
+    @@ copy ~from:"opam-builder" ~src:[ "/usr/local/bin/opam" ]
+         ~dst:"/usr/local/bin/opam" ()
+    @@ (if has_opam_build_bin then
+         (* COPY from context doesn't preserve exec for runc overlayfs,
+            so copy then chmod inside the image *)
+         copy ~src:[ "opam-build-bin" ] ~dst:"/tmp/opam-build-bin" ()
+         @@ run "install -m 755 /tmp/opam-build-bin /usr/local/bin/opam-build && rm /tmp/opam-build-bin"
+       else empty)
+    @@ run "echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections"
+    @@ run "if getent passwd %i; then userdel -r $(id -nu %i); fi" uid uid
+    @@ run "groupadd --gid %i opam" gid
+    @@ run "adduser --disabled-password --gecos '@opam' --no-create-home --uid %i --gid %i --home /home/opam opam" uid gid
+    @@ run "mkdir -p /home/opam && chown -R %i:%i /home/opam" uid gid
+    @@ run "echo 'opam ALL=(ALL:ALL) NOPASSWD:ALL' > /etc/sudoers.d/opam"
+    @@ run "chmod 440 /etc/sudoers.d/opam"
+    @@ run "chown root:root /etc/sudoers.d/opam"
+    @@ (List.init repo_count (fun i ->
+         copy ~chown:(Printf.sprintf "%i:%i" uid gid)
+           ~src:[ Printf.sprintf "opam-repository-%d" i ]
+           ~dst:(Printf.sprintf "/home/opam/opam-repository-%d" i) ()
+       ) |> List.fold_left (@@) empty)
+    @@ user "%i:%i" uid gid
+    @@ workdir "/home/opam"
+    (* Merge all repos into one directory — later repos override
+       earlier ones. opam-build works best with a single repo. *)
+    @@ run "cp -a /home/opam/opam-repository-0 /home/opam/opam-repository"
+    @@ (if repo_count > 1 then
+         List.init (repo_count - 1) (fun i ->
+           let idx = i + 1 in
+           run "cp -a /home/opam/opam-repository-%d/packages/* /home/opam/opam-repository/packages/" idx
+         ) |> List.fold_left (@@) empty
+       else empty)
+    @@ run "opam init -k local -a /home/opam/opam-repository --bare --disable-sandboxing -y"
+    @@ run "opam switch create default --empty"
+  in
+  stage1 @@ final
+
+(** Cache key for the opam-build binary. Profiles with different
+    [opam_build_repo] settings need distinct binaries (local forks
+    often handle packages upstream can't), so the binary cache is
+    keyed by the source rather than shared globally. *)
+let opam_build_bin_path ~cache_dir ~opam_build_repo =
+  let key = match opam_build_repo with
+    | None -> "upstream"
+    | Some path ->
+      let s = Fpath.to_string path in
+      let h = Digest.string s |> Digest.to_hex in
+      "local-" ^ String.sub h 0 12
+  in
+  Fpath.(cache_dir / ("opam-build-bin-" ^ key))
+
+let build_opam_build ~sw env ~cache_dir ~arch ?opam_build_repo () =
+  let bin_path = opam_build_bin_path ~cache_dir ~opam_build_repo in
+  if Bos.OS.File.exists bin_path |> Result.get_ok then
+    Ok bin_path
+  else begin
+    Log.info (fun m -> m "Building opam-build binary...");
+    let temp_dir = Bos.OS.Dir.tmp "day11_opam_build_%s" |> Result.get_ok in
+    let local_opam_build = match opam_build_repo with
+      | Some src ->
+        let dst = Fpath.(temp_dir / "opam-build") in
+        (match Day11_sys.Tree.copy ~source:src ~target:dst with
+         | Ok () ->
+           ignore (Sys.command (Printf.sprintf "rm -rf %s"
+             (Fpath.to_string Fpath.(dst / "_build"))));
+           true
+         | Error _ -> false)
+      | None -> false
+    in
+    let dockerfile =
+      generate_opam_build_dockerfile ~arch ~local_opam_build in
+    let dockerfile_path = Fpath.(temp_dir / "Dockerfile") in
+    Bos.OS.File.write dockerfile_path
+      (Dockerfile.string_of_t dockerfile) |> ignore;
+    (* Tag by source so concurrent builds for different
+       [opam_build_repo] values don't race on the same image tag. *)
+    let tag_suffix = match opam_build_repo with
+      | None -> "upstream"
+      | Some p ->
+        let h = Digest.string (Fpath.to_string p) |> Digest.to_hex in
+        "local-" ^ String.sub h 0 12
+    in
+    let tag = Printf.sprintf "day11-opam-build:%s" tag_suffix in
+    let build_log = Fpath.(temp_dir / "docker-build.log") in
+    let build_run =
+      Day11_sys.Run.run ~sw env
+        Bos.Cmd.(v "docker" % "build" % "--network=host" % "--no-cache"
+                 % "-t" % tag % Fpath.to_string temp_dir)
+        (Some build_log)
+    in
+    match build_run.status with
+    | `Exited 0 ->
+      (* Extract just the binary from the image *)
+      let extract_run =
+        Day11_sys.Run.run ~sw env
+          Bos.Cmd.(v "docker" % "run" % "--rm" % tag
+                   % "cat" % "/usr/local/bin/opam-build")
+          None
+      in
+      (match extract_run.status with
+       | `Exited 0 ->
+         let oc = open_out_bin (Fpath.to_string bin_path) in
+         output_string oc extract_run.output;
+         close_out oc;
+         Unix.chmod (Fpath.to_string bin_path) 0o755;
+         Day11_sys.Sudo.rm_rf ~sw env temp_dir |> ignore;
+         Ok bin_path
+       | _ ->
+         Day11_sys.Sudo.rm_rf ~sw env temp_dir |> ignore;
+         Rresult.R.error_msgf "Failed to extract opam-build binary")
+    | `Exited n ->
+      let saved_log = Fpath.(cache_dir / "opam-build-failed.log") in
+      ignore (Bos.OS.File.read build_log |> Result.map (fun content ->
+        ignore (Bos.OS.File.write saved_log content)));
+      Day11_sys.Sudo.rm_rf ~sw env temp_dir |> ignore;
+      Rresult.R.error_msgf
+        "opam-build Docker build failed (exit %d). Log: %a"
+        n Fpath.pp saved_log
+    | `Signaled n ->
+      Day11_sys.Sudo.rm_rf ~sw env temp_dir |> ignore;
+      Rresult.R.error_msgf "opam-build Docker build signaled %d" n
+  end
+
+let opam_build_mount ~cache_dir ?opam_build_repo () =
+  let bin_path = opam_build_bin_path ~cache_dir ~opam_build_repo in
+  if Bos.OS.File.exists bin_path |> Result.get_ok then
+    Some (Day11_container.Mount.bind_ro
+      ~src:(Fpath.to_string bin_path)
+      "/usr/local/bin/opam-build")
+  else
+    None
+
+let load_cached ~cache_dir ~os_distribution ~os_version =
+  let base_dir = Fpath.(cache_dir / "base") in
+  let marker = Fpath.(base_dir / "fs" / "usr") in
+  if Bos.OS.Dir.exists marker |> Result.get_ok then begin
+    (* Use stored digest if available, otherwise fall back to tag *)
+    let image = match load_digest base_dir with
+      | Some d -> d
+      | None -> Printf.sprintf "%s:%s" os_distribution os_version
+    in
+    Some (make_base_layer ~image ~base_dir)
+  end else
+    None
+
+let build ~sw env ~cache_dir ~os_distribution ~os_version ~arch
+    ~opam_repositories ~uid ~gid ?digest () =
+  let base_dir = Fpath.(cache_dir / "base") in
+  let marker = Fpath.(base_dir / "fs" / "usr") in
+  let image = Printf.sprintf "%s:%s" os_distribution os_version in
+  if Bos.OS.Dir.exists marker |> Result.get_ok then begin
+    Log.info (fun m -> m "Base layer cached");
+    Ok (make_base_layer ~image ~base_dir)
+  end else begin
+    Log.info (fun m -> m "Building base image from %s:%s"
+      os_distribution os_version);
+    let temp_dir = Bos.OS.Dir.tmp "day11_base_%s" |> Result.get_ok in
+    (* Copy all opam repositories into Docker build context *)
+    List.iteri (fun i opam_repository ->
+      let repo_dest = Fpath.(temp_dir /
+        Printf.sprintf "opam-repository-%d" i) in
+      (match Day11_sys.Tree.copy ~source:opam_repository ~target:repo_dest with
+       | Ok () -> ()
+       | Error (`Msg e) ->
+           Log.err (fun m -> m "Failed to copy opam-repository %d: %s" i e))
+    ) opam_repositories;
+    (* Copy opam-build binary into Docker context if available *)
+    let has_opam_build_bin =
+      let cached = Fpath.(cache_dir / "opam-build-bin") in
+      if Bos.OS.File.exists cached |> Result.get_ok then begin
+        ignore (Sys.command (Printf.sprintf "cp %s %s"
+          (Fpath.to_string cached)
+          (Fpath.to_string Fpath.(temp_dir / "opam-build-bin"))));
+        true
+      end else false
+    in
+    let dockerfile =
+      generate_dockerfile ~os_distribution ~os_version ~arch ~uid ~gid
+        ~repo_count:(List.length opam_repositories)
+        ~has_opam_build_bin ?digest ()
+    in
+    let dockerfile_path = Fpath.(temp_dir / "Dockerfile") in
+    Bos.OS.File.write dockerfile_path
+      (Dockerfile.string_of_t dockerfile) |> ignore;
+    (* Docker build *)
+    let tag = Printf.sprintf "day11-%s:%s" os_distribution os_version in
+    let build_log = Fpath.(temp_dir / "docker-build.log") in
+    Log.info (fun m -> m "Running docker build (tag: %s)" tag);
+    let build_run =
+      Day11_sys.Run.run ~sw env
+        Bos.Cmd.(v "docker" % "build" % "--network=host" % "--no-cache"
+                 % "-t" % tag % Fpath.to_string temp_dir)
+        (Some build_log)
+    in
+    match build_run.status with
+    | `Exited 0 ->
+        Log.info (fun m -> m "Docker build succeeded, importing");
+        (* Import the built image *)
+        Bos.OS.Dir.create ~path:true base_dir |> ignore;
+        let result =
+          Day11_layer.Import.from_docker ~sw env ~image:tag ~layer_dir:base_dir
+        in
+        (* Clean up temp dir *)
+        Day11_sys.Sudo.rm_rf ~sw env temp_dir |> ignore;
+        (* Clean up state cache files *)
+        (match result with
+         | Ok () ->
+             ignore (Day11_sys.Sudo.run ~sw env
+               Bos.Cmd.(v "sh" % "-c"
+                        % Printf.sprintf "rm -f %s"
+                            (Fpath.to_string
+                               Fpath.(base_dir / "fs" / "home" / "opam"
+                                      / ".opam" / "repo"
+                                      / "state-*.cache"))));
+             (* Save the digest so future loads use it for the hash *)
+             (match digest with
+              | Some d -> save_digest base_dir d
+              | None -> ());
+             let image_for_hash = match digest with
+               | Some d -> d | None -> image in
+             Ok (make_base_layer ~image:image_for_hash ~base_dir)
+         | Error _ as e -> e)
+    | `Exited n ->
+        (* Preserve log and Dockerfile before deleting temp dir *)
+        let saved_log = Fpath.(cache_dir / "docker-build-failed.log") in
+        let saved_df = Fpath.(cache_dir / "Dockerfile.failed") in
+        ignore (Bos.OS.File.read build_log |> Result.map (fun content ->
+          ignore (Bos.OS.File.write saved_log content)));
+        ignore (Bos.OS.File.read dockerfile_path |> Result.map (fun content ->
+          ignore (Bos.OS.File.write saved_df content)));
+        Day11_sys.Sudo.rm_rf ~sw env temp_dir |> ignore;
+        Rresult.R.error_msgf
+          "Docker build failed (exit %d). Log saved to: %a\nSTDERR:\n%s"
+          n Fpath.pp saved_log build_run.errors
+    | `Signaled n ->
+        Day11_sys.Sudo.rm_rf ~sw env temp_dir |> ignore;
+        Rresult.R.error_msgf "Docker build signaled %d" n
+  end
