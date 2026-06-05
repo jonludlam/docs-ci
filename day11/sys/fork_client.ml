@@ -45,6 +45,15 @@ let start () =
     if Sys.file_exists candidate then candidate
     else "day11-fork-helper"
   in
+  (* [sock_path] is derived from our pid, which the OS reuses across
+     runs. With a persistent TMPDIR (a real fs, as the daemon now
+     requires) a stale socket from a prior killed run can survive; the
+     helper's [bind] would then fail on the existing file, leaving
+     nothing listening and the client seeing [Connection refused].
+     Remove any stale socket first so the helper always binds fresh.
+     Safe: only one live process can hold our pid, so any existing file
+     here belongs to a dead one. *)
+  (try Unix.unlink sock_path with _ -> ());
   Log.info (fun m -> m "Starting fork helper: %s %s" helper_bin sock_path);
   let pid = Unix.create_process helper_bin
     [| helper_bin; sock_path |]
