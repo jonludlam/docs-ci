@@ -1,8 +1,17 @@
-type target_mode =
+(* Target selection is two orthogonal axes: which versions of a package
+   to take, and which packages to include. *)
+type version_mode =
   | All_versions
-  | Latest_versions
-  | Small_universe
-  | Packages of string list
+  | Latest_n of int
+      (** Keep the [n] most-recent (non-avoided) versions of each
+          package. [Latest_n 1] = newest only. *)
+
+type name_filter =
+  | All_names
+  | Names of string list
+      (** Track only these exact package names. *)
+
+type target_mode = { versions : version_mode; names : name_filter }
 
 type t = {
   name : string;
@@ -31,18 +40,47 @@ type t = {
      separate sites in parallel. [None] means build-only, no docs. *)
 }
 
-let target_mode_to_json = function
-  | All_versions -> `String "all_versions"
-  | Latest_versions -> `String "latest_versions"
-  | Small_universe -> `String "small_universe"
-  | Packages pkgs -> `Assoc [("packages", `List (List.map (fun s -> `String s) pkgs))]
+let version_mode_to_json = function
+  | All_versions -> `String "all"
+  | Latest_n n -> `Assoc [ ("latest", `Int n) ]
+
+let name_filter_to_json = function
+  | All_names -> `String "all"
+  | Names l -> `Assoc [ ("only", `List (List.map (fun s -> `String s) l)) ]
+
+let target_mode_to_json { versions; names } =
+  `Assoc [ ("versions", version_mode_to_json versions);
+           ("names", name_filter_to_json names) ]
+
+let version_mode_of_json = function
+  | `String "all" -> Ok All_versions
+  | `Assoc [ ("latest", `Int n) ] -> Ok (Latest_n n)
+  | _ -> Error (`Msg "invalid version_mode")
+
+let names_of_json l =
+  Names (List.filter_map (function `String s -> Some s | _ -> None) l)
+
+let name_filter_of_json = function
+  | `String "all" -> Ok All_names
+  | `Assoc [ ("only", `List l) ] -> Ok (names_of_json l)
+  | _ -> Error (`Msg "invalid name_filter")
 
 let target_mode_of_json = function
-  | `String "all_versions" -> Ok All_versions
-  | `String "latest_versions" -> Ok Latest_versions
-  | `String "small_universe" -> Ok Small_universe
-  | `Assoc [("packages", `List l)] ->
-    Ok (Packages (List.filter_map (function `String s -> Some s | _ -> None) l))
+  (* New two-axis form: {"versions": …, "names": …}. *)
+  | `Assoc fields when List.mem_assoc "versions" fields
+                    || List.mem_assoc "names" fields ->
+    let v = match List.assoc_opt "versions" fields with
+      | None -> Ok All_versions | Some j -> version_mode_of_json j in
+    let n = match List.assoc_opt "names" fields with
+      | None -> Ok All_names | Some j -> name_filter_of_json j in
+    (match v, n with
+     | Ok versions, Ok names -> Ok { versions; names }
+     | (Error _ as e), _ | _, (Error _ as e) -> e)
+  (* Back-compat with the old single-enum [target_mode]. *)
+  | `String "all_versions" -> Ok { versions = All_versions; names = All_names }
+  | `String "latest_versions" -> Ok { versions = Latest_n 1; names = All_names }
+  | `Assoc [ ("packages", `List l) ] ->
+    Ok { versions = All_versions; names = names_of_json l }
   | _ -> Error (`Msg "invalid target_mode")
 
 let opt_to_json = function
@@ -229,21 +267,24 @@ let refresh_base_digest t =
       "Failed to resolve digest for %s" (base_image_tag t)))
 
 let track_limit t =
-  match t.target_mode with
+  match t.target_mode.versions with
   | All_versions -> None
-  | Latest_versions -> Some 1
-  | Small_universe -> Some 1
-  | Packages _ -> None
+  | Latest_n n -> Some n
 
 let track_filter t =
-  match t.target_mode with
-  | All_versions | Latest_versions -> []
-  | Small_universe ->
-    (* Hard-coded small-universe list mirrors [Day11_batch.Targets]. *)
-    [ "astring"; "fmt"; "fpath"; "rresult"; "bos"; "logs"; "cmdliner";
-      "ptime"; "uutf"; "mtime"; "yojson"; "eio"; "lwt"; "ppxlib";
-      "odoc"; "odoc-parser"; "re"; "cstruct"; "bigstringaf" ]
-  | Packages pkgs -> pkgs
+  match t.target_mode.names with
+  | All_names -> []
+  | Names pkgs -> pkgs
+
+let target_mode_summary t =
+  let v = match t.target_mode.versions with
+    | All_versions -> "all versions"
+    | Latest_n 1 -> "latest version"
+    | Latest_n n -> Printf.sprintf "latest %d versions" n in
+  let n = match t.target_mode.names with
+    | All_names -> "all packages"
+    | Names l -> Printf.sprintf "%d packages" (List.length l) in
+  Printf.sprintf "%s of %s" v n
 
 let pp fmt t =
   Fmt.pf fmt "@[<v>\
@@ -264,11 +305,7 @@ let pp fmt t =
     (Option.value ~default:"(none)" t.odoc_repo)
     (Option.value ~default:"(none)" t.opam_build_repo)
     (Option.value ~default:"(auto)" t.compiler)
-    (match t.target_mode with
-     | All_versions -> "all versions"
-     | Latest_versions -> "latest versions"
-     | Small_universe -> "small universe"
-     | Packages pkgs -> String.concat ", " pkgs)
+    (target_mode_summary t)
     t.with_doc
     t.os_distribution t.os_version t.arch
     (match t.base_image_digest with
