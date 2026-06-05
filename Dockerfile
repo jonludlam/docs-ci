@@ -102,8 +102,24 @@ RUN git config --system safe.directory '*' \
     && git config --system user.name "docs-ci" \
     && git config --system user.email "ci@day11"
 
+# TMPDIR holds the daemon's scratch: per-build overlay upper/work dirs
+# (day11_run_*), the layer-merge target, and git temp files it
+# rename()s into the repos/cache. It must satisfy:
+#   1. NOT be overlayfs — overlayfs can't be an overlay upperdir, so the
+#      build container would come up with an empty rootfs
+#      ("/usr/bin/env: no such file"). The container's /tmp is overlayfs.
+#   2. Be on the SAME MOUNT as the layer cache. Stack.merge composes a
+#      build's dependency layers with [cp --link] (hardlinks) from the
+#      cache into a scratch dir, and hardlinks cannot cross mount points
+#      — even bind-mounts of one ext4. A separate tmp mount makes the
+#      merge fail (and the failure is swallowed, silently dropping deps,
+#      so large closures like odoc-driver fail to find sexplib/etc.).
+# Putting TMPDIR *under* the bind-mounted cache satisfies both: it's the
+# same ext4 mount as the layers (hardlinks work, valid upperdir) and the
+# same superblock as the repo/overlay mounts (rename works).
 ENV OCAMLRUNPARAM=a=2 \
-    HOME=${HOME_DIR}
+    HOME=${HOME_DIR} \
+    TMPDIR=${HOME_DIR}/.day11/cache/tmp
 
 # All four binaries live on PATH. solver_worker / fork_helper are
 # discovered by day11 via [Filename.dirname Sys.executable_name].
@@ -122,4 +138,43 @@ RUN chown ${UID}:${GID} /var/lib/ocurrent
 
 USER ${UID}:${GID}
 
-ENTRYPOINT ["dumb-init", "/usr/local/bin/ocaml-docs-ci"]
+# Bake the two profiles the daemon expects ([--profiles=ocaml-odoc-
+# master,oxcaml] in docker-compose.yml) straight into the image. They
+# are committed as plain JSON under [docker/profiles/] and land in
+# [${HOME_DIR}/.day11/profiles/] — the daemon's default --profile-dir,
+# since HOME=${HOME_DIR}. Paths inside the JSON are absolute under
+# ${HOME_DIR}, matching the --remote / --github-pin-overlay / volume
+# targets in docker-compose.yml:
+#
+#   ocaml-odoc-master = mainline opam-repository, with odoc pinned to
+#                       its master branch via the github-pin overlay
+#                       (layered last so it wins).
+#   oxcaml            = mainline opam-repository with the oxcaml overlay
+#                       layered on top.
+#   html_dir          = [<cache>/<os-dir>/html-<name>], exactly what the
+#                       nginx front-end serves as [/profiles/<name>/docs/].
+#
+# These only survive to runtime because docker-compose.yml bind-mounts
+# *only* [.day11/cache] (and [.day11/snapshots]) from the host, not the
+# whole [.day11] tree — so this JSON isn't shadowed by a host mount.
+# mkdir first (as the runtime user) so [~/.day11] is user-owned and the
+# daemon can create [~/.day11/overlays/] under it at startup.
+#
+# Also create empty, user-owned parent dirs for the two opam-repository
+# mirrors. The daemon's [--remote] step runs [git clone] when
+# [<path>/.git] is absent, so it populates these itself on first run —
+# no opam-repository checkout is needed on the host. docker-compose.yml
+# mounts a named volume at each: a fresh volume inherits this uid:gid
+# ownership from the mount point (so the daemon can write) and then
+# persists the clone across container recreation.
+RUN mkdir -p ${HOME_DIR}/.day11/profiles \
+      ${HOME_DIR}/.day11/overlays ${HOME_DIR}/ocaml ${HOME_DIR}/oxcaml
+COPY --chown=${UID}:${GID} docker/profiles/ ${HOME_DIR}/.day11/profiles/
+
+# Ensure TMPDIR exists and is owned by the runtime user before the
+# daemon starts. It lives under the bind-mounted cache, so it can't be
+# created at image-build time (the mount shadows it), and several code
+# paths mkdir subdirs of it non-recursively / bind a socket there,
+# assuming it's present. Creating it here (as the app user, before any
+# sudo path can make it root-owned) keeps it writable.
+ENTRYPOINT ["dumb-init", "sh", "-c", "mkdir -p \"$TMPDIR\" && exec /usr/local/bin/ocaml-docs-ci \"$@\"", "sh"]
