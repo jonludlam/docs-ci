@@ -70,10 +70,16 @@ let run_create profile_dir name opam_repositories odoc_repo opam_build_repo
     compiler all_versions small_universe with_doc
     arch os_distribution os_version driver_compiler =
   let dir = Fpath.(resolve_profile_dir profile_dir / "profiles") in
-  let target_mode =
-    if all_versions then Day11_batch.Profile.All_versions
-    else if small_universe then Day11_batch.Profile.Small_universe
-    else Day11_batch.Profile.All_versions
+  let target_mode : Day11_batch.Profile.target_mode =
+    if small_universe then
+      { versions = Day11_batch.Profile.Latest_n 1;
+        names = Day11_batch.Profile.Names Day11_batch.Targets.small_universe }
+    else if all_versions then
+      { versions = Day11_batch.Profile.All_versions;
+        names = Day11_batch.Profile.All_names }
+    else
+      { versions = Day11_batch.Profile.All_versions;
+        names = Day11_batch.Profile.All_names }
   in
   let profile : Day11_batch.Profile.t = {
     name;

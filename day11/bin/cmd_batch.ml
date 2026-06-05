@@ -79,13 +79,17 @@ let run profile_name profile_dir np cores_per_build overcommit
       (* CLI target overrides the profile's target mode *)
       (false, false, Some t, None)
     | None ->
-      let sm = profile.target_mode = Day11_batch.Profile.Small_universe in
-      let av = profile.target_mode = Day11_batch.Profile.All_versions in
-      let pkgs = match profile.target_mode with
-        | Day11_batch.Profile.Packages names -> Some names
-        | _ -> None
+      let open Day11_batch.Profile in
+      let tm = profile.target_mode in
+      let av = match tm.versions with
+        | All_versions -> true
+        | Latest_n _ -> false
       in
-      (sm, av, None, pkgs)
+      let pkgs = match tm.names with
+        | Names names -> Some names
+        | All_names -> None
+      in
+      (false, av, None, pkgs)
   in
   (* Convenience aliases from ctx — avoids churn in the (still large)
      body below. All profile-derived state that used to be bound
