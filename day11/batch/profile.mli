@@ -5,11 +5,20 @@
     to build, and what platform to target. Profiles are stored as JSON
     files in a profile directory (default [~/.day11/profiles/]). *)
 
-type target_mode =
+(** Target selection on two orthogonal axes: which versions to take,
+    and which packages to include. *)
+type version_mode =
   | All_versions
-  | Latest_versions
-  | Small_universe
-  | Packages of string list
+  | Latest_n of int
+      (** Keep the [n] most-recent (non-avoided) versions of each
+          package. [Latest_n 1] = newest only. *)
+
+type name_filter =
+  | All_names
+  | Names of string list
+      (** Track only these exact package names. *)
+
+type target_mode = { versions : version_mode; names : name_filter }
 
 type t = {
   name : string;
