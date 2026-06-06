@@ -64,7 +64,7 @@ ARG HOME_DIR=/home/app
 RUN apt-get update && apt-get install -y --no-install-recommends \
       runc \
       git rsync sudo dumb-init ca-certificates \
-      libev4 libsqlite3-0 libgmp10 libffi8 \
+      libev4 libsqlite3-0 sqlite3 libgmp10 libffi8 \
       bash coreutils util-linux procps psmisc \
       curl bzip2 gzip xz-utils unzip tar \
       graphviz \
