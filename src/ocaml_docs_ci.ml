@@ -63,6 +63,7 @@ let main () current_config github_auth mode profiles_arg profile_dir_arg
         Filename.concat (Sys.getenv "HOME") ".day11/cache")
   in
   ignore (Bos.OS.Dir.create ~path:true cache_dir);
+  Docs_ci_lib.Startup_diagnostics.run ~profile_dir ~cache_dir;
   let remote_specs =
     List.map (fun arg ->
       match Docs_ci_lib.Remote_opam_repo.spec_of_arg arg with
