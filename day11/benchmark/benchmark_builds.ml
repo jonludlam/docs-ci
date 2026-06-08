@@ -64,7 +64,9 @@ let () =
   ) test_packages in
   Printf.printf "  %d solved\n\n" (List.length solutions);
   (* Build the DAG *)
-  let nodes = Day11_opam_build.Dag.build_dag cache ~base_hash:base.hash solutions in
+  let nodes =
+    Day11_opam_build.Dag.build_dag cache ~base_hash:base.hash
+      (List.map (fun (t, d) -> (t, d, d)) solutions) in
   Printf.printf "DAG: %d nodes\n\n" (List.length nodes);
   (* First pass: ensure everything is cached (warm up) *)
   Printf.printf "--- Warm-up (build all, cache fills) ---\n%!";

@@ -54,7 +54,7 @@ let () =
   let astring_solution = astring_result.Day11_solution.Solve_result.build_deps in
   (* Build astring with real deps *)
   let astring_nodes = Day11_opam_build.Dag.build_dag cache ~base_hash:base.hash
-    [ (astring_pkg, astring_solution) ] in
+    [ (astring_pkg, astring_solution, astring_solution) ] in
   let astring_build = time "Build astring + deps (cache)" (fun () ->
     Day11_opam_build.Dag_executor.execute env ~np:4
       ~on_complete:(fun ~stats:_ ~cached:_ _ _ -> ())

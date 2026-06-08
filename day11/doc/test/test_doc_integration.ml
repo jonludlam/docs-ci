@@ -88,7 +88,7 @@ let test_build_odoc () = with_eio @@ fun ~sw env ->
   in
   Printf.printf "Building %s...\n%!" (OpamPackage.to_string odoc_pkg);
   let benv : Day11_opam_build.Types.build_env =
-    { base; os_dir; uid = 1000; gid = 1000 } in
+    { base; os_dir; uid = 1000; gid = 1000; cpu_slots = None } in
   let tool =
     Day11_opam_build.Tools.build_tool ~sw env benv ~packages:git_packages ~repos:repos_with_shas
       odoc_pkg

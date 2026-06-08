@@ -229,7 +229,7 @@ let () =
     let find_opam = Day11_opam.Git_packages.find_package git_packages in
     let cache = Day11_opam_build.Hash_cache.create ~find_opam () in
     let nodes = Day11_opam_build.Dag.build_dag cache ~base_hash:base.hash
-      all_solutions in
+      (List.map (fun (t, d) -> (t, d, d)) all_solutions) in
     if List.length need_solve > 0 then
       Printf.printf "  DAG: %d nodes\n%!" (List.length nodes);
     (* Build *)

@@ -17,7 +17,7 @@ let test_build_astring () = with_eio @@ fun ~sw env ->
     |> ok_or_fail "base" in
   Printf.printf "Base: %s\n%!" (Fpath.to_string base.dir);
   let benv : Types.build_env =
-    { base; os_dir; uid = 1000; gid = 1000 } in
+    { base; os_dir; uid = 1000; gid = 1000; cpu_slots = None } in
   let pkg = OpamPackage.of_string "astring.0.8.5" in
   let layer_hash = Day11_layer.Hash.of_strings
     [ "build"; base.hash; "astring.0.8.5" ] in
@@ -52,7 +52,7 @@ let test_build_cached () = with_eio @@ fun ~sw env ->
   let base = Base.ensure ~sw env ~cache_dir ~image:base_image
     |> ok_or_fail "base" in
   let benv : Types.build_env =
-    { base; os_dir; uid = 1000; gid = 1000 } in
+    { base; os_dir; uid = 1000; gid = 1000; cpu_slots = None } in
   let pkg = OpamPackage.of_string "astring.0.8.5" in
   let layer_hash = Day11_layer.Hash.of_strings
     [ "build"; base.hash; "astring.0.8.5" ] in

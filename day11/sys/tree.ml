@@ -18,10 +18,19 @@ let cp_file ~source ~target =
         end
       in
       loop ()));
-  (* Preserve permissions and times *)
+  (* Preserve permissions and times; a failure here shouldn't abort the
+     copy that already succeeded. *)
   let stat = Unix.lstat src_s in
-  Unix.chmod tgt_s stat.Unix.st_perm;
-  Unix.utimes tgt_s stat.Unix.st_atime stat.Unix.st_mtime
+  (try Unix.chmod tgt_s stat.Unix.st_perm
+   with Unix.Unix_error (e, _, _) ->
+     Log.warn (fun m ->
+         m "could not preserve permissions on %s: %s" tgt_s
+           (Unix.error_message e)));
+  try Unix.utimes tgt_s stat.Unix.st_atime stat.Unix.st_mtime
+  with Unix.Unix_error (e, _, _) ->
+    Log.warn (fun m ->
+        m "could not preserve timestamps on %s: %s" tgt_s
+          (Unix.error_message e))
 
 let rec walk_copy ~link source target =
   let src_s = Fpath.to_string source in
@@ -94,8 +103,14 @@ let clense ~source ~target =
         (try
            let src_stat = Unix.lstat src_s in
            if src_stat.Unix.st_mtime = stat.Unix.st_mtime then
-             Unix.unlink tgt_s
-         with Unix.Unix_error _ -> ())
+             try Unix.unlink tgt_s
+             with Unix.Unix_error (Unix.EACCES, _, _) ->
+               (* Read-only file: add write bits and retry. *)
+               Unix.chmod tgt_s (stat.Unix.st_perm lor 0o222);
+               Unix.unlink tgt_s
+         with Unix.Unix_error (e, _, _) ->
+           Log.debug (fun m ->
+               m "clense: skipping %s: %s" tgt_s (Unix.error_message e)))
     | _ -> ()
   in
   try
