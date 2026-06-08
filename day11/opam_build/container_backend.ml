@@ -164,9 +164,31 @@ let build ~sw env (benv : Types.build_env)
     | Some dirs -> dirs
     | None -> collect_transitive_dep_dirs ~os_dir node
   in
-  let prep_upper = match prep_upper with
+  let base_prep_upper = match prep_upper with
     | Some f -> f
     | None -> opam_build_prep_upper ~sw env ~uid:benv.uid ~gid:benv.gid
+  in
+  (* The container runs with hostname "builder" (see [opam_build_spec]).
+     runc — unlike [docker run] — does NOT populate [/etc/hosts], and the
+     base image's is an empty file, so resolving "builder" (opam and sudo
+     both do) misses [files] and falls through to DNS. We give it a local
+     entry.
+
+     We write it into the overlay's writable UPPER, NOT as a bind-mount
+     onto [/etc/hosts]. That path exists only in the read-only lower (the
+     base's 0-byte file), so bind-mounting onto it forces overlayfs to
+     copy the file up to create a mount target — and that copy-up races
+     runc 1.1.x's hardened mount-target re-check: if it interleaves, runc
+     sees the original dentry as "/etc/hosts (deleted)" and aborts the
+     whole container with "possibly malicious path detected". Rare (~0.2%
+     of builds) but real, and clustered under concurrency. A plain regular
+     file in the upper shadows the lower with no copy-up and no mount. *)
+  let prep_upper ~upper ~lowers =
+    base_prep_upper ~upper ~lowers;
+    let etc = Fpath.(upper / "etc") in
+    mkdir etc;
+    ignore (Bos.OS.File.write Fpath.(etc / "hosts")
+              "127.0.0.1\tlocalhost builder\n")
   in
   let repo_mounts =
     if opam_repositories = [] then []
@@ -194,23 +216,7 @@ let build ~sw env (benv : Types.build_env)
       ) patch_files
     | _ -> []
   in
-  (* The container runs with hostname "builder" (see [opam_build_spec]).
-     We launch via runc, which — unlike [docker run] — does NOT populate
-     [/etc/hosts], and the base image's is empty. So resolving "builder"
-     (which opam and sudo both do during a build) misses [files] and
-     falls through to DNS, stalling several seconds per build. Provide a
-     minimal [/etc/hosts] that resolves the hostname locally, exactly as
-     day10 did. The file is constant, so we keep one under [os_dir]
-     rather than minting a temp per build. *)
-  let hosts_mount =
-    let hosts_file = Fpath.(os_dir / "etc-hosts") in
-    match Bos.OS.File.write hosts_file "127.0.0.1\tlocalhost builder\n" with
-    | Ok () ->
-      [ Day11_container.Mount.bind_ro
-          ~src:(Fpath.to_string hosts_file) "/etc/hosts" ]
-    | Error _ -> []
-  in
-  let all_mounts = hosts_mount @ repo_mounts @ patch_mounts @ mounts in
+  let all_mounts = repo_mounts @ patch_mounts @ mounts in
   (* Acquire a CPU slot if the env has a pool; fibre-blocks until one
      is free. Within the slot's lifetime, nproc inside the container
      reports the slot size, so nested [make -j$(nproc)] self-limits. *)
