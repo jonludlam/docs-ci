@@ -72,7 +72,8 @@ let () =
   let cache = Day11_opam_build.Hash_cache.create ~find_opam () in
   let nodes =
     time "Build DAG (50 solutions)" (fun () ->
-      Day11_opam_build.Dag.build_dag cache ~base_hash:"benchmark" solutions) in
+      Day11_opam_build.Dag.build_dag cache ~base_hash:"benchmark"
+        (List.map (fun (t, d) -> (t, d, d)) solutions)) in
   Printf.printf "  → %d unique nodes\n%!" (List.length nodes);
 
   (* 5. Blessing *)

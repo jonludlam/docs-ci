@@ -63,7 +63,9 @@ let test_full_pipeline_mock () = with_eio @@ fun ~sw:_ env ->
   let find_opam = Day11_opam.Git_packages.find_package git_packages in
   let cache = Day11_opam_build.Hash_cache.create ~find_opam () in
   let base_hash = Base.hash ~image:"test" in
-  let nodes = Dag.build_dag cache ~base_hash solutions in
+  let nodes =
+    Dag.build_dag cache ~base_hash
+      (List.map (fun (t, d) -> (t, d, d)) solutions) in
   Printf.printf "  DAG: %d nodes\n%!" (List.length nodes);
   Alcotest.(check bool) "nodes > 0" true (List.length nodes > 0);
   (* Execute with mock build — all succeed *)
@@ -100,7 +102,9 @@ let test_pipeline_with_summary () = with_eio @@ fun ~sw:_ env ->
   let find_opam = Day11_opam.Git_packages.find_package git_packages in
   let cache = Day11_opam_build.Hash_cache.create ~find_opam () in
   let base_hash = Base.hash ~image:"test" in
-  let nodes = Dag.build_dag cache ~base_hash solutions in
+  let nodes =
+    Dag.build_dag cache ~base_hash
+      (List.map (fun (t, d) -> (t, d, d)) solutions) in
   Printf.printf "  DAG: %d nodes, executing...\n%!" (List.length nodes);
   (* Build mock outcomes for summary *)
   let build_outcomes = ref [] in
@@ -156,7 +160,7 @@ let test_parallel_real_builds () = with_eio @@ fun ~sw env ->
   let find_opam = Day11_opam.Git_packages.find_package git_packages in
   let cache = Day11_opam_build.Hash_cache.create ~find_opam () in
   let nodes = Dag.build_dag cache ~base_hash:base.hash
-    solutions in
+    (List.map (fun (t, d) -> (t, d, d)) solutions) in
   Printf.printf "  DAG: %d nodes\n%!" (List.length nodes);
   let completed_pkgs = ref [] in
   let failed_pkgs = ref [] in

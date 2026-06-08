@@ -27,7 +27,7 @@ let test_voodoo_astring () = with_eio @@ fun ~sw env ->
   (* Step 1: Build odoc-driver *)
   Printf.printf "Building odoc-driver.3.1.0...\n%!";
   let benv : Day11_opam_build.Types.build_env =
-    { base; os_dir; uid = 1000; gid = 1000 } in
+    { base; os_dir; uid = 1000; gid = 1000; cpu_slots = None } in
   let driver_tool =
     Day11_opam_build.Tools.build_tool ~sw env benv ~packages:git_packages ~repos:repos_with_shas
       (OpamPackage.of_string "odoc-driver.3.1.0")
@@ -95,7 +95,7 @@ let test_voodoo_astring () = with_eio @@ fun ~sw env ->
   let build_dirs = List.map
     (Day11_opam_layer.Build.dir ~os_dir) all_builds in
   let spec = Day11_opam_build.Build_layer.opam_build_spec
-    ~cmd:voodoo_cmd ~mounts ~uid:1000 ~gid:1000 in
+    ~cmd:voodoo_cmd ~mounts ~uid:1000 ~gid:1000 () in
   let run, upper, _timing =
     Day11_runner.Run_in_layers.run ~sw env ~base ~build_dirs spec
     |> ok_or_fail "run voodoo"

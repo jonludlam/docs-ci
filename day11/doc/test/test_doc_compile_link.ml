@@ -149,7 +149,7 @@ let test_astring_docs () = with_eio @@ fun ~sw env ->
     | Ok result -> result.Day11_solution.Solve_result.build_deps
     | Error (e, _) -> Alcotest.fail ("solve astring: " ^ e) in
   let astring_nodes = Dag.build_dag cache ~base_hash:base.hash
-    [ (astring_pkg, astring_solution) ] in
+    [ (astring_pkg, astring_solution, astring_solution) ] in
   Dag_executor.execute env ~np:4
     ~on_complete:(fun ~stats:_ ~cached:_ _ _ -> ())
     ~on_cascade:(fun ~failed:_ ~failed_dep:_ -> ())

@@ -72,7 +72,9 @@ let test_all_cmdliner () = with_eio @@ fun ~sw env ->
   (* Build global DAG *)
   let find_opam = Day11_opam.Git_packages.find_package git_packages in
   let cache = Hash_cache.create ~find_opam () in
-  let nodes = Dag.build_dag cache ~base_hash:base.hash solutions in
+  let nodes =
+    Dag.build_dag cache ~base_hash:base.hash
+      (List.map (fun (t, d) -> (t, d, d)) solutions) in
   Printf.printf "DAG: %d unique build nodes (deduplicated from %d solutions)\n%!"
     (List.length nodes) (List.length solutions);
   (* Execute with real builds *)
