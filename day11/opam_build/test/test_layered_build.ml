@@ -24,7 +24,7 @@ let test_layered_build () = with_eio @@ fun ~sw env ->
     |> ok_or_fail "base" in
   Printf.printf "Base: %s\n%!" (Fpath.to_string base.dir);
   let benv : Types.build_env =
-    { base; os_dir; uid = 1000; gid = 1000 } in
+    { base; os_dir; uid = 1000; gid = 1000; cpu_slots = None } in
   let _final =
     List.fold_left (fun (deps : Day11_opam_layer.Build.t list) pkg_str ->
       let pkg = OpamPackage.of_string pkg_str in

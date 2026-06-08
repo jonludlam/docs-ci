@@ -57,6 +57,8 @@
   (alcotest-lwt (and (>= 1.7.0) :with-test))
   (mirage-crypto-rng (>= 0.8.7))
   (prometheus-app (>= 1.2))
+  eio_main
+  lwt_eio
   (omigrate (>= 0.3.2))))
 
 (package

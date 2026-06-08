@@ -101,7 +101,7 @@ let test_dag_single_solution () =
   let cache = Hash_cache.create ~find_opam () in
   let nodes = Dag.build_dag cache
     ~base_hash:"base"
-    [ (pkg "b.1", solution) ] in
+    [ (pkg "b.1", solution, solution) ] in
   Alcotest.(check int) "2 nodes" 2 (List.length nodes);
   let names = List.map (fun (n : Day11_opam_layer.Build.t) ->
     OpamPackage.to_string n.pkg) nodes in
@@ -126,7 +126,7 @@ let test_dag_dedup_across_solutions () =
   in
   let cache = Hash_cache.create ~find_opam () in
   let nodes = Dag.build_dag cache ~base_hash:"base"
-    [ (pkg "a.1", sol1); (pkg "b.1", sol2) ] in
+    [ (pkg "a.1", sol1, sol1); (pkg "b.1", sol2, sol2) ] in
   (* c.1, a.1, b.1 — c.1 appears once despite being in 2 solutions *)
   Alcotest.(check int) "3 nodes (c deduplicated)" 3 (List.length nodes);
   let c_nodes = List.filter (fun (n : Day11_opam_layer.Build.t) ->
@@ -151,7 +151,7 @@ let test_dag_different_universes () =
   in
   let cache = Hash_cache.create ~find_opam () in
   let nodes = Dag.build_dag cache ~base_hash:"base"
-    [ (pkg "c.1", sol1); (pkg "c.1", sol2) ] in
+    [ (pkg "c.1", sol1, sol1); (pkg "c.1", sol2, sol2) ] in
   let c_nodes = List.filter (fun (n : Day11_opam_layer.Build.t) ->
     OpamPackage.to_string n.pkg = "c.1") nodes in
   (* c.1 with dep d.1 vs c.1 with dep e.1 — different universes *)
@@ -176,7 +176,7 @@ let test_dag_universe_set () =
   in
   let cache = Hash_cache.create ~find_opam () in
   let nodes = Dag.build_dag cache ~base_hash:"base"
-    [ (pkg "b.1", solution) ] in
+    [ (pkg "b.1", solution, solution) ] in
   let b_node = List.find (fun (n : Day11_opam_layer.Build.t) ->
     OpamPackage.to_string n.pkg = "b.1") nodes in
   (* b.1's universe should include c.1 and d.1 (transitive deps) *)
