@@ -911,6 +911,8 @@ type doc_plan = {
   all_nodes : Build.t list;
   node_kind : Build.t -> node_kind;
   build_one : sw:Eio.Switch.t -> Eio_unix.Stdenv.base -> Build.t -> bool;
+  epoch_hash : string;
+  epoch_base : Fpath.t;
 }
 
 let node_kind_of_plan (plan : internal_plan) (n : build) =
@@ -1204,20 +1206,30 @@ let plan_doc_dag ~sw env (ctx : Day11_batch.Profile_ctx.t)
     ?(on_doc_complete = fun _ ~success:_ -> ())
     ?snapshot_dir
     ~nodes ~solutions ~blessing_maps:_ () =
-  (* Honour the profile's [html_dir]: link/doc-all stages write the
-     emitted HTML there. Without this the per-profile output dir gets
-     ignored and every profile spills its HTML into the shared
-     [<os_dir>/html] location, mixing oxcaml docs with mainline. *)
-  let html_dir = match ctx.profile.html_dir with
+  (* The profile's [html_dir] is the *base* for epoch dirs. Each doc run
+     builds into [base/epoch-<hash>/html] (hash = the doc toolchain, see
+     Epoch.compute); the live site is served via a [base/html-live]
+     symlink, swapped manually by a Dangerous OCurrent node (see
+     Docs_ci_lib.Epoch_promote). Without a per-profile base every profile
+     would spill HTML into the shared [<os_dir>/html], mixing oxcaml docs
+     with mainline. *)
+  let epoch_base = match ctx.profile.html_dir with
     | Some d -> Fpath.v d
     | None -> Fpath.(ctx.os_dir / "html") in
-  ignore (Bos.OS.Dir.create ~path:true html_dir);
   match resolve_tools ~sw env ctx.benv
     ~packages:ctx.git_packages ~repos:ctx.repos_with_shas
     ~odoc_repo:ctx.profile.odoc_repo ~cache:ctx.hash_cache
     ?driver_compiler:ctx.driver_compiler ~solutions () with
   | None -> None
   | Some (driver_tool, odoc_tools, all_source_dirs) ->
+  let epoch_hash =
+    Day11_lib.Epoch.compute ~tool_hashes:
+      ((driver_tool : Tool.t).hash
+       :: List.map (fun (_, (t : Tool.t)) -> t.hash) odoc_tools)
+  in
+  let epoch = Day11_lib.Epoch.create ~base_dir:epoch_base epoch_hash in
+  let html_dir = Fpath.(epoch.Day11_lib.Epoch.dir / "html") in
+  ignore (Bos.OS.Dir.create ~path:true html_dir);
   let plan = build_internal_plan ~os_dir:ctx.os_dir
     ~driver_tool ~odoc_tools ~nodes ~solutions in
   let dispatch = make_dispatch ctx.benv ~os_dir:ctx.os_dir ~html_dir
@@ -1238,7 +1250,8 @@ let plan_doc_dag ~sw env (ctx : Day11_batch.Profile_ctx.t)
   write_dag_if_requested ~snapshot_dir plan;
   Some { all_nodes = plan.all_nodes;
          node_kind = kind_of;
-         build_one = dispatch_with_callbacks }
+         build_one = dispatch_with_callbacks;
+         epoch_hash; epoch_base }
 
 let build_tools_and_run ~sw env (ctx : Day11_batch.Profile_ctx.t)
     ~np ~mounts ~build_one

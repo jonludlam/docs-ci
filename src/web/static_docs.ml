@@ -69,7 +69,8 @@ let resource ~profile_dir name tail =
               `Not_found
               (Printf.sprintf "profile %s has no html_dir configured" name)
           | Some root_str ->
-            let root = Fpath.v root_str in
+            (* Serve through the [html-live] symlink (the live epoch). *)
+            let root = Fpath.(v root_str / "html-live") in
             let tail = if tail = "" then "index.html" else tail in
             (match resolve_inside ~root tail with
              | None ->

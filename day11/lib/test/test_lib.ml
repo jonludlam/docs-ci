@@ -183,7 +183,12 @@ let test_epoch_promote () = with_tmp_dir @@ fun dir ->
   let link_path = Fpath.(dir / "html-live") in
   let target = Unix.readlink (Fpath.to_string link_path) in
   Alcotest.(check bool) "symlink target contains epoch hash"
-    true (Astring.String.is_infix ~affix:"abc123" target)
+    true (Astring.String.is_infix ~affix:"abc123" target);
+  (* Target must be relative so it resolves under any mount point
+     (the daemon's HOME vs. Caddy's /srv). *)
+  Alcotest.(check bool) "symlink target is relative"
+    true (Filename.is_relative target);
+  Alcotest.(check string) "symlink target" "epoch-abc123/html" target
 
 let test_epoch_current () = with_tmp_dir @@ fun dir ->
   (* No epoch yet *)
@@ -205,6 +210,20 @@ let test_epoch_gc () = with_tmp_dir @@ fun dir ->
   let deleted = Epoch.gc ~base_dir:dir ~keep:1 in
   (* Should have deleted at least some epochs *)
   Alcotest.(check bool) "deleted some" true (deleted >= 0)
+
+(* gc must never delete the currently-live epoch, even when it's not
+   among the [keep] most-recent — e.g. a deliberate rollback-promote. *)
+let test_epoch_gc_keeps_live () = with_tmp_dir @@ fun dir ->
+  let e1 = Epoch.create ~base_dir:dir "aaa" in
+  let _e2 = Epoch.create ~base_dir:dir "bbb" in
+  let _e3 = Epoch.create ~base_dir:dir "ccc" in
+  Epoch.promote ~base_dir:dir e1;  (* make the oldest live *)
+  let _ = Epoch.gc ~base_dir:dir ~keep:1 in
+  Alcotest.(check bool) "live (oldest) epoch survived gc"
+    true (Bos.OS.Dir.exists e1.dir |> Result.get_ok);
+  Alcotest.(check bool) "current still resolves to the live epoch"
+    true (match Epoch.current ~base_dir:dir with
+          | Some e -> e.hash = "aaa" | None -> false)
 
 (* ── Build_config tests ─────────────────────────────────────────── *)
 
@@ -373,6 +392,7 @@ let () =
           Alcotest.test_case "promote" `Quick test_epoch_promote;
           Alcotest.test_case "current" `Quick test_epoch_current;
           Alcotest.test_case "gc" `Quick test_epoch_gc;
+          Alcotest.test_case "gc keeps live" `Quick test_epoch_gc_keeps_live;
         ] );
       ( "Build_config",
         [
