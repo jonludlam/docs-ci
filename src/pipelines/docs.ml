@@ -354,14 +354,28 @@ let v_for_profile ~config ~eio_env ~cache_dir:_ ?cpu_slots
       ~input:ctx_current
       (Current.list_seq (List.map Current.catch all_nodes))
   in
-  let+ _results = collapsed_builds in
-  (* Status regen: history.jsonl is already up to date (incremental),
-     this just re-derives [status.json] from it. Triggered each time
-     [list_seq] re-evaluates. *)
-  Day11_batch.Summary.generate_status
-    ~snapshot_dir ~packages_dir
-    ~run_id:(Day11_lib.Run_log.get_id run_log);
-  ()
+  let builds =
+    let+ _results = collapsed_builds in
+    (* Status regen: history.jsonl is already up to date (incremental),
+       this just re-derives [status.json] from it. Triggered each time
+       [list_seq] re-evaluates. *)
+    Day11_batch.Summary.generate_status
+      ~snapshot_dir ~packages_dir
+      ~run_id:(Day11_lib.Run_log.get_id run_log);
+    ()
+  in
+  (* Manual epoch promotion: a Dangerous OCurrent node per profile that,
+     once confirmed in the web UI, swaps [html-live] to the freshly-built
+     epoch (and gc's old epochs, keeping 3). Independent of [builds] so a
+     promote can be triggered whenever, while the previous epoch keeps
+     serving until then. Only when this profile actually emits docs. *)
+  match doc_plan with
+  | None -> builds
+  | Some plan ->
+    Current.all
+      [ builds;
+        Epoch_promote.promote ~base_dir:plan.epoch_base
+          ~epoch_hash:plan.epoch_hash ]
 
 (* Fan out across profiles: each profile gets its own sub-pipeline
    composed under [Current.all]. Profiles with the same os_dir share

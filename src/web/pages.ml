@@ -923,7 +923,10 @@ let os_dir_for ~ctx name =
    layer succeeded, leaving the docs link 404-ing. *)
 let html_dir_for ~ctx name =
   match Profile.load ~dir:ctx.profile_dir ~name with
-  | Ok profile -> Option.map Fpath.v profile.html_dir
+  (* Read through the [html-live] symlink — the live epoch — not the
+     base dir (which holds the per-epoch trees). *)
+  | Ok profile ->
+    Option.map (fun d -> Fpath.(v d / "html-live")) profile.html_dir
   | Error _ -> None
 
 let docs_index_path ~html_dir pkg version =
