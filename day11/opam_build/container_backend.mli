@@ -48,10 +48,19 @@ val opam_build_strategy :
 (** Default build strategy for a package — runs
     [opam-build -v <pkg>] and cleans via {!opam_build_cleanup}. *)
 
+val collect_transitive_dep_hashes :
+  Day11_opam_layer.Build.t -> string list
+(** Transitive dep layer hashes in overlayfs-stack order (direct deps
+    frontmost / topmost). The hash-level core of
+    {!collect_transitive_dep_dirs}; recorded verbatim in [build.json]
+    ([Build_meta.t.stack]) so a tool can reconstruct the rootfs lower
+    stack without re-deriving the DAG ordering. *)
+
 val collect_transitive_dep_dirs :
   os_dir:Fpath.t -> Day11_opam_layer.Build.t -> Fpath.t list
-(** Collect transitive dep layer dirs from a build node. Used as
-    the default [?build_dirs] when none is supplied. *)
+(** Collect transitive dep layer dirs from a build node, in
+    overlay-stack order. Used as the default [?build_dirs] when none
+    is supplied. *)
 
 include Backend.S
 (** {1 Backend interface} *)

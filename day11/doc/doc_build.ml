@@ -161,7 +161,7 @@ let compile ~sw env benv ~(config : doc_config) ~build_layer
     let all_dirs = build_deps_layers @ dep_compile_layers in
     let result =
       match Day11_opam_build.Build_layer.build ~sw env benv
-              ~mounts ~build_dirs:all_dirs
+              ~opam_repositories:[] ~mounts ~build_dirs:all_dirs
               ~prep_upper:(doc_prep_upper ~sw env ~uid:benv.uid ~gid:benv.gid)
               ~on_extract compile_node
               ~strategy:{ cmd; cleanup = doc_cleanup } () with
@@ -203,6 +203,7 @@ let link ~sw env benv ~(config : doc_config) ~build_layer
     in
     let result =
       match Day11_opam_build.Build_layer.build ~sw env benv
+              ~opam_repositories:[]
               ~mounts:(mounts @ [html_mount])
               ~build_dirs:all_compile_dirs
               ~prep_upper:(doc_prep_upper ~sw env ~uid:benv.uid ~gid:benv.gid)
@@ -246,6 +247,7 @@ let doc_all ~sw env benv ~(config : doc_config) ~build_layer
     let all_dirs = build_deps_layers @ dep_compile_layers in
     let result =
       match Day11_opam_build.Build_layer.build ~sw env benv
+              ~opam_repositories:[]
               ~mounts:(mounts @ [html_mount])
               ~build_dirs:all_dirs
               ~prep_upper:(doc_prep_upper ~sw env ~uid:benv.uid ~gid:benv.gid)

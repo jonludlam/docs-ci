@@ -26,7 +26,6 @@ val build :
   os_distribution:string ->
   os_version:string ->
   arch:string ->
-  opam_repositories:Fpath.t list ->
   uid:int ->
   gid:int ->
   ?digest:string ->

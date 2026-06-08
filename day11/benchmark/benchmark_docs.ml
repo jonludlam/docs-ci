@@ -61,7 +61,7 @@ let () =
       ~on_cascade:(fun ~failed:_ ~failed_dep:_ -> ())
       astring_nodes
       (fun node ->
-        match Day11_opam_build.Build_layer.build ~sw env benv node () with
+        match Day11_opam_build.Build_layer.build ~sw env benv ~opam_repositories:[] node () with
         | Day11_opam_build.Types.Success _ -> true | _ -> false);
     List.find (fun (n : Day11_opam_layer.Build.t) ->
       OpamPackage.equal n.pkg astring_pkg) astring_nodes) in
@@ -100,7 +100,7 @@ let () =
     { hash = doc_hash; pkg = astring_pkg;
       deps = astring_build.deps @ [ astring_build ]; universe = Day11_solution.Universe.dummy } in
   let html_count = time "Doc gen astring (cold, single phase)" (fun () ->
-    match Day11_opam_build.Build_layer.build ~sw env benv ~mounts:all_mounts
+    match Day11_opam_build.Build_layer.build ~sw env benv ~opam_repositories:[] ~mounts:all_mounts
             doc_node ~strategy:{ cmd; cleanup = fun ~sw:_ _ _ -> () } () with
     | Day11_opam_build.Types.Success bl ->
       let dd = Day11_opam_layer.Build.dir ~os_dir bl in
@@ -113,7 +113,7 @@ let () =
   Printf.printf "  → %d HTML files\n%!" html_count;
   (* Cache hit *)
   ignore (time "Doc gen astring (cache hit)" (fun () ->
-    Day11_opam_build.Build_layer.build ~sw env benv ~mounts:all_mounts
+    Day11_opam_build.Build_layer.build ~sw env benv ~opam_repositories:[] ~mounts:all_mounts
       doc_node ~strategy:{ cmd; cleanup = fun ~sw:_ _ _ -> () } ()));
   ignore (Day11_sys.Sudo.rm_rf ~sw env prep_dir);
   Printf.printf "\nDone.\n%!"

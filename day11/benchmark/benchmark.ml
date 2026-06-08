@@ -103,7 +103,7 @@ let () =
         pkg = OpamPackage.of_string "astring.0.8.5";
         deps = []; universe = Day11_solution.Universe.dummy } in
     ignore (time "Build astring (cache hit)" (fun () ->
-      Day11_opam_build.Build_layer.build ~sw env benv astring_node ()));
+      Day11_opam_build.Build_layer.build ~sw env benv ~opam_repositories:[] astring_node ()));
     (* Warm cache: build odoc-driver tool *)
     ignore (time "Tools.build_tool odoc-driver (cache hit)" (fun () ->
       Day11_opam_build.Tools.build_tool ~sw env benv

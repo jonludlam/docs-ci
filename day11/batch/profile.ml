@@ -163,12 +163,31 @@ let save ~dir t =
   with exn ->
     Rresult.R.error_msgf "Profile.save: %s" (Printexc.to_string exn)
 
+(* Resolve a profile [opam_repositories] entry against the .day11 root.
+   Absolute entries are returned unchanged; a relative entry such as
+   ["overlays/odoc-master/repo"] is taken relative to [day11_dir], so
+   profiles needn't bake in an absolute [/home/app] prefix and stay
+   portable across hosts / containers. *)
+let resolve_repo ~day11_dir s =
+  if Filename.is_relative s then
+    Fpath.(day11_dir // v s |> normalize |> to_string)
+  else s
+
 let load ~dir ~name =
   let path = Fpath.(dir / (name ^ ".json")) in
   match Bos.OS.File.read path with
   | Error _ as e -> e
   | Ok data ->
-    try of_json (Yojson.Safe.from_string data)
+    try
+      match of_json (Yojson.Safe.from_string data) with
+      | Error _ as e -> e
+      | Ok profile ->
+        (* [dir] is the [profiles/] dir, so its parent is the .day11
+           root that relative repo paths resolve against. *)
+        let day11_dir = Fpath.parent dir in
+        Ok { profile with
+             opam_repositories =
+               List.map (resolve_repo ~day11_dir) profile.opam_repositories }
     with exn ->
       Rresult.R.error_msgf "Profile.load %s: %s" name (Printexc.to_string exn)
 

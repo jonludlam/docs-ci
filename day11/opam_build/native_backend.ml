@@ -113,7 +113,7 @@ let place_changed_files ~src_root ~dst_root rels =
 (* -- Entry point --------------------------------------------------------- *)
 
 let build ~sw env (benv : Types.build_env)
-    ?(opam_repositories = []) ?mounts:_
+    ~opam_repositories ?mounts:_
     ?patches ?build_dirs
     ?prep_upper:_ ?strategy
     (node : Build.t) ~target_fs () =

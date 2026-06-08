@@ -178,6 +178,7 @@ let run profile_name profile_dir np target_str doc_output rebuild_failed
          ~mounts:base_mounts
          ~build_one:(fun node ->
            match Day11_opam_build.Build_layer.build ~sw env benv ?patches
+                   ~opam_repositories:(List.map Fpath.v profile.opam_repositories)
                    ~mounts:base_mounts node () with
            | Day11_opam_build.Types.Success _ -> true
            | _ -> false)

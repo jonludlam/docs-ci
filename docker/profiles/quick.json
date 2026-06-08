@@ -1,7 +1,7 @@
 {
   "name": "quick",
   "opam_repositories": [
-    "/home/app/ocaml/opam-repository"
+    "repo/opam-repository"
   ],
   "odoc_repo": null,
   "opam_build_repo": null,

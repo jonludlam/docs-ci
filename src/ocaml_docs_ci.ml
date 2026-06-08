@@ -64,10 +64,19 @@ let main () current_config github_auth mode profiles_arg profile_dir_arg
   in
   ignore (Bos.OS.Dir.create ~path:true cache_dir);
   Docs_ci_lib.Startup_diagnostics.run ~profile_dir ~cache_dir;
+  (* A relative [--remote] / [--github-pin-overlay] PATH is resolved
+     against the .day11 root — the same base [Profile.load] uses for a
+     profile's [opam_repositories] ([profile_dir]'s parent). Resolving
+     both the same way is what lets a relative spec path line up with
+     the matching relative entry in a profile (the pipeline keys live
+     repo-polling on the resolved path string). *)
+  let day11_dir = Fpath.parent profile_dir in
+  let resolve_repo_path p =
+    Fpath.v (Profile.resolve_repo ~day11_dir (Fpath.to_string p)) in
   let remote_specs =
     List.map (fun arg ->
       match Docs_ci_lib.Remote_opam_repo.spec_of_arg arg with
-      | Ok s -> s
+      | Ok s -> { s with path = resolve_repo_path s.path }
       | Error (`Msg e) ->
         Fmt.epr "error: %s@." e;
         exit 2
@@ -80,7 +89,7 @@ let main () current_config github_auth mode profiles_arg profile_dir_arg
   let pin_overlay_specs =
     List.map (fun arg ->
       match Docs_ci_lib.Github_pin_overlay.spec_of_arg arg with
-      | Ok s -> s
+      | Ok s -> { s with path = resolve_repo_path s.path }
       | Error (`Msg e) ->
         Fmt.epr "error: %s@." e;
         exit 2
@@ -218,7 +227,11 @@ let remotes_arg =
              $(b,URL) into $(b,PATH) at startup and fetches it \
              hourly; local commits are preserved (fast-forward-only \
              merge, fails if the working tree has diverged). Day11 \
-             profiles reference $(b,PATH) as a regular local repo."
+             profiles reference $(b,PATH) as a regular local repo. \
+             A relative $(b,PATH) is resolved against the .day11 root \
+             (--profile-dir's parent), the same as a profile's \
+             $(i,opam_repositories) entries — so a relative spec path \
+             lines up with the matching relative entry in a profile."
        ~docv:"URL=PATH" [ "remote" ]
 
 let pin_overlays_arg =
@@ -233,7 +246,9 @@ let pin_overlays_arg =
              $(i,<latest-tag>+master.<YYYYMMDD>.<sha7>) and $(i,src:) \
              pointing at the pinned commit, and commits the result to \
              $(b,PATH/repo/) (its own git repo). Profiles reference \
-             $(b,PATH/repo) as a regular local repo."
+             $(b,PATH/repo) as a regular local repo. As with \
+             $(b,--remote), a relative $(b,PATH) is resolved against \
+             the .day11 root (--profile-dir's parent)."
        ~docv:"URL=PATH" [ "github-pin-overlay" ]
 
 let cores_per_build_arg =
