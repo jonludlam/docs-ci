@@ -228,6 +228,48 @@ let test_write_template () = with_tmp_dir @@ fun dir ->
     Oci_spec.placeholder_root
     (match path_field with `String s -> s | _ -> "")
 
+(* Instantiating a template must reproduce exactly what a direct
+   [to_yojson ~root] would have produced — i.e. write_template +
+   instantiate_template round-trips back to the concrete spec. This is
+   the property a layer-replay tool relies on. *)
+let test_instantiate_template () =
+  let spec = make_basic_spec () in
+  let templated = Oci_spec.to_yojson ~root:Oci_spec.placeholder_root spec in
+  let instantiated =
+    Oci_spec.instantiate_template ~root:"/run/rootfs" templated
+    |> Result.get_ok in
+  let direct = Oci_spec.to_yojson ~root:"/run/rootfs" spec in
+  Alcotest.(check bool) "instantiated template equals direct to_yojson"
+    true (instantiated = direct);
+  let root_path =
+    json_member "root" instantiated |> json_member "path" in
+  Alcotest.(check string) "root substituted" "/run/rootfs"
+    (match root_path with `String s -> s | _ -> "")
+
+let test_instantiate_template_rejects_non_template () =
+  let spec = make_basic_spec () in
+  (* An already-instantiated spec (real root, not the placeholder)
+     must be rejected rather than silently mangled. *)
+  let concrete = Oci_spec.to_yojson ~root:"/real/rootfs" spec in
+  Alcotest.(check bool) "non-template rejected"
+    true (Result.is_error (Oci_spec.instantiate_template ~root:"/x" concrete))
+
+let test_instantiate_template_file () = with_tmp_dir @@ fun dir ->
+  let spec = make_basic_spec () in
+  let template = Fpath.(dir / "template.json") in
+  Oci_spec.write_template template spec |> is_ok "write_template";
+  let bundle = Fpath.(dir / "bundle") in
+  Bos.OS.Dir.create ~path:true bundle |> Result.get_ok |> ignore;
+  Oci_spec.instantiate_template_file
+    ~template ~root:"/run/rootfs" ~bundle_dir:bundle
+  |> is_ok "instantiate_template_file";
+  let content = Bos.OS.File.read Fpath.(bundle / "config.json")
+    |> Result.get_ok in
+  let parsed = Yojson.Safe.from_string content in
+  let root_path = json_member "root" parsed |> json_member "path" in
+  Alcotest.(check string) "bundle root substituted" "/run/rootfs"
+    (match root_path with `String s -> s | _ -> "")
+
 (* ── Test registration ───────────────────────────────────────────── *)
 
 let () =
@@ -255,5 +297,11 @@ let () =
           Alcotest.test_case "terminal" `Quick test_oci_spec_terminal;
           Alcotest.test_case "write" `Quick test_write_spec;
           Alcotest.test_case "write_template" `Quick test_write_template;
+          Alcotest.test_case "instantiate_template" `Quick
+            test_instantiate_template;
+          Alcotest.test_case "instantiate_template rejects non-template"
+            `Quick test_instantiate_template_rejects_non_template;
+          Alcotest.test_case "instantiate_template_file" `Quick
+            test_instantiate_template_file;
         ] );
     ]

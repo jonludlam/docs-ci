@@ -1,6 +1,6 @@
 # Helper dockerfiles
 
-## nginx
+## caddy
 
 Front-end web server for the day11-based pipeline. Serves rendered
 HTML directly from the day11 layer cache and reverse-proxies the

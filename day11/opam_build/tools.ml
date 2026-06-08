@@ -80,6 +80,14 @@ let build_tool ~sw env (benv : Types.build_env) ?(np = 4) ~packages ~repos
   | Error _ as e -> e
   | Ok (tool, source_dirs) ->
       let nodes = tool.builds in
+      (* Repo source paths for the per-package slice. [Build_layer.build]
+         (via [Container_backend]) extracts just [node.pkg] from these
+         into a fresh repo mounted at [~/.opam/repo/default], shadowing
+         the full opam-repository baked into the base image. Without
+         this, opam loads switch state against all ~18k packages
+         (several seconds) on every tool node. Builds already pass this;
+         tool nodes previously didn't, hence the slow tool jobs. *)
+      let opam_repositories = List.map (fun (p, _sha) -> Fpath.v p) repos in
       Printf.printf "  Solution packages:\n%!";
       List.iter (fun (node : Day11_opam_layer.Build.t) ->
         Printf.printf "    %s (%d deps)\n%!"
@@ -109,12 +117,12 @@ let build_tool ~sw env (benv : Types.build_env) ?(np = 4) ~packages ~repos
               ~src:dir "/home/opam/src" in
             let strategy = source_dir_strategy node.pkg in
             (match Build_layer.build ~sw env benv
-                     ~mounts:(src_mount :: mounts) node
+                     ~mounts:(src_mount :: mounts) ~opam_repositories node
                      ~strategy () with
              | Types.Success _ -> true
              | _ -> false)
           | None ->
-            (match Build_layer.build ~sw env benv ~mounts node () with
+            (match Build_layer.build ~sw env benv ~mounts ~opam_repositories node () with
              | Types.Success _ -> true
              | _ -> false));
       match !failed with

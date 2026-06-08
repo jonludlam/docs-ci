@@ -156,8 +156,12 @@ let v ~repo_label ~limit ~(filter : string list)
     | None -> "all"
     | Some n -> string_of_int n
   in
+  let reduced_filter =
+    if List.length filter <= 3 then filter else
+      List.take 3 filter @ ["..."]
+  in
   Current.component "Track %s (limit=%s) - %a" repo_label limit_s
-    Fmt.(list string) filter
+    Fmt.(list string) reduced_filter
   |> let> repo in
      (* opkey disambiguates at the LatchedBuilder layer too. *)
      let opkey = Printf.sprintf "track-%s-%s-%s"

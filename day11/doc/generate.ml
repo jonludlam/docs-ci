@@ -898,7 +898,7 @@ let make_dispatch benv ~os_dir ~html_dir ~(plan : internal_plan)
         let src_mount = Day11_container.Mount.bind_ro ~src:dir "/home/opam/src" in
         let strategy = Day11_opam_build.Tools.source_dir_strategy node.pkg in
         (match Day11_opam_build.Build_layer.build ~sw env benv
-                 ~mounts:(src_mount :: mounts) node ~strategy () with
+                 ~opam_repositories:[] ~mounts:(src_mount :: mounts) node ~strategy () with
          | Day11_opam_build.Types.Success _ -> true | _ -> false)
       | None -> ignore (sw, env); build_one node
     end

@@ -108,6 +108,7 @@ let test_build_jtw_tools () = with_eio @@ fun ~sw env ->
     { hash = layer_hash; pkg = jtw_pkg; deps = tool.builds; universe = Day11_solution.Universe.dummy } in
   let result =
     Build_layer.build ~sw env benv
+      ~opam_repositories:[]
       ~mounts:[ jtw_mount ]
       jtw_node
       ~strategy ()

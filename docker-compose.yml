@@ -6,26 +6,27 @@
 #     needs --privileged plus access to the host's runc (the
 #     debian-12 runc shipped in the image is enough on most kernels;
 #     swap to a bind-mount of /usr/bin/runc if the host's is newer).
-#   - web — nginx, serving rendered HTML from the day11 cache
+#   - web — Caddy, serving rendered HTML from the day11 cache
 #     directly and reverse-proxying everything else (dashboard, job
 #     logs, snapshot pages) to the daemon at :8080.
 #
 # The daemon resolves everything under /home/app (the image's app-user
-# HOME). The two profiles it runs are baked into the image at
-# /home/app/.day11/profiles by the Dockerfile, so we deliberately do
-# NOT bind-mount the whole [.day11] tree (that would shadow them) — the
-# individual subdirs [.day11/{cache,snapshots,overlays}] are bind-mounted
-# from the host instead. Scratch (TMPDIR) lives *inside* the cache mount
-# (/home/app/.day11/cache/tmp): the daemon hardlinks dep layers from the
-# cache into scratch when merging, and hardlinks can't cross mounts —
-# so scratch must share the cache's mount, not be its own. (The cache,
-# overlays and repo volumes are all one host ext4, so the cross-mount
-# rename()s the daemon also does still work — rename allows same
-# superblock across bind-mounts; hardlink does not.)
-# The opam-repository mirrors live on named volumes (also that ext4)
-# that the daemon clones into on first run, so a fresh checkout needs
-# nothing on the host. Profile JSON, the --remote targets and the
-# --github-pin-overlay path all use the same fixed /home/app paths.
+# HOME). The whole [.day11] tree lives on a single named volume mounted
+# at /home/app/.day11. The two profiles it runs are baked into the image
+# at /home/app/.day11/profiles by the Dockerfile; a bind-mount there
+# would shadow them, but an empty *named* volume is pre-populated from
+# the image's directory contents (and ownership) on first creation, so
+# the baked-in profiles survive. Everything under .day11 — cache,
+# snapshots, overlays, and scratch (TMPDIR=/home/app/.day11/cache/tmp) —
+# now shares one volume/filesystem, so the daemon's hardlinks (cp --link
+# of dep layers from cache into scratch on Stack.merge) and its cross-dir
+# rename()s all stay within a single mount and just work.
+# The opam-repository mirrors live on named volumes that the daemon
+# clones into on first run, so a fresh checkout needs nothing on the
+# host. The quick profile's mirror is kept inside the day11 volume
+# (.day11/repo/opam-repository) via a relative path in its profile JSON;
+# the --remote target and --github-pin-overlay path are matched to the
+# resolved /home/app paths so the live repo-polling hooks up.
 
 services:
   daemon:
@@ -33,9 +34,11 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # Set to the host user that owns the bind-mounted [~/.day11/]
-        # tree (default 1000). Easiest is to drop a [.env] next to
-        # this file with [UID=$(id -u)] / [GID=$(id -g)].
+        # UID/GID of the in-image app user that owns /home/app — and
+        # thus the [day11] named volume, which inherits that ownership
+        # from the image on first creation (default 1000). Drop a [.env]
+        # next to this file with [UID=$(id -u)] / [GID=$(id -g)] to match
+        # your host user.
         UID: ${UID:-1000}
         GID: ${GID:-1000}
     restart: unless-stopped
@@ -57,41 +60,32 @@ services:
       # profiles are still baked into the image (docker/profiles/) but
       # disabled here — add them back to this list to re-enable.
       - --profiles=quick
-      - --remote=https://github.com/ocaml/opam-repository.git=/home/app/ocaml/opam-repository
-      - --remote=https://github.com/jonludlam/opam-repository-oxcaml=/home/app/oxcaml/opam-repository
-      - --github-pin-overlay=https://github.com/ocaml/odoc=/home/app/.day11/overlays/odoc-master
+      # All opam-repository mirrors live inside the day11 volume, under
+      # .day11/repo/. The clone-target PATHs below are relative, so
+      # ocaml-docs-ci resolves them against the .day11 root (the parent
+      # of --profile-dir, i.e. /home/app/.day11) — exactly as it resolves
+      # the matching [opam_repositories] entries in the profiles, so the
+      # two line up and live repo-polling hooks up. git clone creates the
+      # missing [repo/...] parents on first run.
+      - --remote=https://github.com/ocaml/opam-repository.git=repo/opam-repository
+      - --remote=https://github.com/jonludlam/opam-repository-oxcaml=repo/oxcaml/opam-repository
+      - --github-pin-overlay=https://github.com/ocaml/odoc=overlays/odoc-master
       - --jobs=40
       - --cores-per-build=4
       - --overcommit=2.5
       - --port=8080
     volumes:
-      # opam-repository mirrors, on named volumes. These start empty;
-      # the daemon's [--remote] step git-clones into them on first run
-      # (and fetches thereafter), so nothing needs cloning on the host.
-      # The clones persist across container recreation. Ownership is
-      # inherited from the user-owned mount points baked in the image.
-      - opam-repository-ocaml:/home/app/ocaml
-      - opam-repository-oxcaml:/home/app/oxcaml
-      # The day11 cache (built layers + rendered HTML). We mount the
-      # individual .day11 subdirs (cache, snapshots, overlays, tmp)
-      # rather than all of .day11, so the image-baked profiles at
-      # /home/app/.day11/profiles stay intact (not shadowed by a mount).
-      - ${HOME}/.day11/cache:/home/app/.day11/cache
-      # Snapshot history (per-profile run records the web UI renders).
-      # Also outside [profiles/], so persisting it is safe.
-      - ${HOME}/.day11/snapshots:/home/app/.day11/snapshots
-      # github-pin overlay (odoc-master). Bind-mounted from the host so
-      # it's on the same ext4 as TMPDIR — otherwise it lands on the
-      # container's overlayfs and git rename()s into it fail with EXDEV.
-      - ${HOME}/.day11/overlays:/home/app/.day11/overlays
+      # All of .day11 on a single named volume: cache (built layers +
+      # rendered HTML), snapshots, overlays, the opam-repository mirrors
+      # (repo/, git-cloned by --remote on first run), and scratch (TMPDIR=
+      # /home/app/.day11/cache/tmp). The image-baked profiles at
+      # /home/app/.day11/profiles are preserved — an empty named volume
+      # is seeded from the image's directory on first creation, so unlike
+      # a bind-mount it doesn't shadow them.
+      - day11:/home/app/.day11
       # OCurrent state (sqlite + per-job logs). Mounted under
       # /var/lib/ocurrent matching the image's WORKDIR.
       - ocurrent-data:/var/lib/ocurrent
-      # Daemon scratch lives at TMPDIR=/home/app/.day11/cache/tmp — i.e.
-      # *inside* the cache mount above, deliberately not a separate
-      # mount. Stack.merge hardlinks (cp --link) dep layers from the
-      # cache into scratch, and hardlinks can't cross mount points, so
-      # the scratch dir must share the cache's mount.
       # Build/import the base image via the host Docker daemon.
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
@@ -100,17 +94,27 @@ services:
       - OCAMLRUNPARAM=b
 
   web:
-    image: nginx:alpine
+    image: caddy:alpine
     restart: unless-stopped
     depends_on:
       - daemon
     ports:
       - "80:80"
     volumes:
-      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-      - ${HOME}/.day11/cache/debian-bookworm-x86_64:/data:ro
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Serve rendered HTML straight from the shared day11 volume,
+      # mounted read-only at /srv. The per-arch cache root is a subdir
+      # of it (/srv/cache/debian-bookworm-x86_64); the Caddyfile prepends
+      # that prefix. NB: not /data — that's Caddy's own state dir.
+      - day11:/srv:ro
+      # Caddy's data (instance id, any future certs) and autosaved
+      # config. Named so they survive container recreation rather than
+      # piling up as anonymous volumes.
+      - caddy-data:/data
+      - caddy-config:/config
 
 volumes:
+  day11:
+  caddy-data:
+  caddy-config:
   ocurrent-data:
-  opam-repository-ocaml:
-  opam-repository-oxcaml:

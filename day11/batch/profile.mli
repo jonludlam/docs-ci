@@ -56,7 +56,12 @@ val save : dir:Fpath.t -> t -> (unit, [> Rresult.R.msg ]) result
 (** [save ~dir profile] writes [profile] to [dir/<name>.json]. *)
 
 val load : dir:Fpath.t -> name:string -> (t, [> Rresult.R.msg ]) result
-(** [load ~dir ~name] reads a profile from [dir/<name>.json]. *)
+(** [load ~dir ~name] reads a profile from [dir/<name>.json].
+
+    Relative [opam_repositories] entries are resolved against the
+    .day11 root ([dir]'s parent — [dir] being the [profiles/] dir), so
+    a profile can refer to e.g. ["overlays/odoc-master/repo"] without
+    an absolute prefix. Absolute entries are kept as-is. *)
 
 val list : dir:Fpath.t -> string list
 (** [list ~dir] returns the names of all profiles in [dir]. *)
@@ -77,6 +82,15 @@ val os_dir_name : t -> string
 
 val default_dir : unit -> Fpath.t
 (** [~/.day11] *)
+
+val resolve_repo : day11_dir:Fpath.t -> string -> string
+(** [resolve_repo ~day11_dir s] resolves a repository path against the
+    .day11 root: an absolute [s] is returned unchanged, a relative one
+    is taken relative to [day11_dir] (and normalised). {!load} applies
+    this to every [opam_repositories] entry; callers that accept repo
+    paths from elsewhere (e.g. ocaml-docs-ci's [--remote] /
+    [--github-pin-overlay] CLI args) should use it too so the paths
+    resolve identically and line up. *)
 
 val base_image_tag : t -> string
 (** E.g. ["debian:bookworm"]. *)

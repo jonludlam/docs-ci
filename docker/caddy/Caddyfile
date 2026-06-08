@@ -1,0 +1,49 @@
+# Caddy front-end for ocaml-docs-ci.
+#
+# Two responsibilities:
+#   1. Serve rendered HTML straight from the day11 cache.
+#      day11 lays each profile's docs out at
+#      [<cache>/html-<profile>/p/<pkg>/<ver>/doc/index.html],
+#      and the daemon links to [/profiles/<NAME>/docs/p/<pkg>/<ver>/...].
+#      The .day11 volume is mounted read-only at /srv (Caddy keeps its
+#      own state on /data, so we can't reuse that path), and the per-arch
+#      cache root is a subdir — so docs live under
+#      [/srv/cache/debian-bookworm-x86_64/html-<profile>/].
+#   2. Reverse-proxy everything else to the daemon's web UI on :8080 —
+#      the dashboard, snapshot pages, /job/ log viewer, diff pages, etc.
+
+:80 {
+	# gzip-compress the static .css/.js/.json odoc emits (and HTML).
+	encode gzip
+
+	# Allow large request bodies for anything the daemon surfaces
+	# (e.g. snapshot uploads via the API).
+	request_body {
+		max_size 100MB
+	}
+
+	# /profiles/<name>/docs/<rest> → serve from the day11 cache.
+	# Capture 1 is the profile, capture 2 the path within its html tree.
+	@docs path_regexp docs ^/profiles/([^/]+)/docs/(.*)$
+	handle @docs {
+		root * /srv/cache/debian-bookworm-x86_64/html-{re.docs.1}
+		rewrite * /{re.docs.2}
+		# odoc trees carry an index.html in every directory; serve it for
+		# bare-directory requests. Missing files 404 (file_server default).
+		file_server {
+			index index.html
+		}
+	}
+
+	# Everything else → the daemon. Caddy forwards the Host header and
+	# sets the X-Forwarded-* headers automatically.
+	handle {
+		reverse_proxy daemon:8080 {
+			# Don't buffer responses: the /job/ log viewer streams
+			# (SSE-style) and must flush as data arrives. Caddy applies
+			# no upstream read timeout by default, so long-lived streams
+			# stay open (nginx needed an explicit 1d bump for this).
+			flush_interval -1
+		}
+	}
+}

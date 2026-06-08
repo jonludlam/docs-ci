@@ -78,7 +78,7 @@ let test_full_doc_pipeline () = with_eio @@ fun ~sw env ->
       let doc_node : build =
         { hash = doc_hash; pkg = b.pkg;
           deps = odoc_tool.builds @ [ b ]; universe = Day11_solution.Universe.dummy } in
-      (match Build_layer.build ~sw env benv ~mounts:[ prep_mount ]
+      (match Build_layer.build ~sw env benv ~opam_repositories:[] ~mounts:[ prep_mount ]
                doc_node ~strategy:{ cmd; cleanup = fun ~sw:_ _ _ -> () } () with
        | Types.Success bl ->
          let dd = Build.dir ~os_dir bl in
@@ -127,7 +127,7 @@ let test_full_doc_pipeline () = with_eio @@ fun ~sw env ->
       let compile_node : build =
         { hash = compile_hash; pkg = b.pkg;
           deps = odoc_tool.builds @ [ b ]; universe = Day11_solution.Universe.dummy } in
-      match Build_layer.build ~sw env benv ~mounts:[ prep_mount ]
+      match Build_layer.build ~sw env benv ~opam_repositories:[] ~mounts:[ prep_mount ]
               compile_node
               ~strategy:{ cmd; cleanup = fun ~sw:_ _ _ -> () } () with
       | Types.Success bl ->
@@ -171,7 +171,7 @@ let test_full_doc_pipeline () = with_eio @@ fun ~sw env ->
     let link_node : build =
       { hash = link_hash; pkg = b.pkg;
         deps = odoc_tool.builds @ [ b; compile_bl ]; universe = Day11_solution.Universe.dummy } in
-    (match Build_layer.build ~sw env benv ~mounts:[ prep_mount ]
+    (match Build_layer.build ~sw env benv ~opam_repositories:[] ~mounts:[ prep_mount ]
              link_node ~strategy:{ cmd; cleanup = fun ~sw:_ _ _ -> () } () with
      | Types.Success bl ->
        let dd = Build.dir ~os_dir bl in

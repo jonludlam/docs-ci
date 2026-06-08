@@ -76,7 +76,7 @@ let generate_opam_build_dockerfile ~arch ~local_opam_build =
   @@ run "install -m 755 _build/default/bin/main.exe /usr/local/bin/opam-build"
 
 let generate_dockerfile ~os_distribution ~os_version ~arch ~uid ~gid
-    ~repo_count ~has_opam_build_bin ?digest () =
+    ~has_opam_build_bin ?digest () =
   let open Dockerfile in
   let base_image = match digest with
     | Some d -> Printf.sprintf "%s@%s" os_distribution d
@@ -111,23 +111,20 @@ let generate_dockerfile ~os_distribution ~os_version ~arch ~uid ~gid
     @@ run "echo 'opam ALL=(ALL:ALL) NOPASSWD:ALL' > /etc/sudoers.d/opam"
     @@ run "chmod 440 /etc/sudoers.d/opam"
     @@ run "chown root:root /etc/sudoers.d/opam"
-    @@ (List.init repo_count (fun i ->
-         copy ~chown:(Printf.sprintf "%i:%i" uid gid)
-           ~src:[ Printf.sprintf "opam-repository-%d" i ]
-           ~dst:(Printf.sprintf "/home/opam/opam-repository-%d" i) ()
-       ) |> List.fold_left (@@) empty)
     @@ user "%i:%i" uid gid
     @@ workdir "/home/opam"
-    (* Merge all repos into one directory — later repos override
-       earlier ones. opam-build works best with a single repo. *)
-    @@ run "cp -a /home/opam/opam-repository-0 /home/opam/opam-repository"
-    @@ (if repo_count > 1 then
-         List.init (repo_count - 1) (fun i ->
-           let idx = i + 1 in
-           run "cp -a /home/opam/opam-repository-%d/packages/* /home/opam/opam-repository/packages/" idx
-         ) |> List.fold_left (@@) empty
-       else empty)
-    @@ run "opam init -k local -a /home/opam/opam-repository --bare --disable-sandboxing -y"
+    (* day11 builds never use the base image's [default] repo: every
+       build and tool node mounts a per-package opam-repository slice
+       over [~/.opam/repo/default] at run time (see
+       [Container_backend.build]). So we init opam against an *empty*
+       repo — just enough that [default] is configured and
+       [~/.opam/repo/default] exists as a valid mount target — instead
+       of baking the full ~18k-package opam-repository (≈160 MB), which
+       only ever served as an unused, slow fallback (opam re-parsed all
+       of it on switch-state load when no slice was mounted). *)
+    @@ run "mkdir -p /home/opam/empty-repo/packages"
+    @@ run "echo 'opam-version: \"2.0\"' > /home/opam/empty-repo/repo"
+    @@ run "opam init -k local -a /home/opam/empty-repo --bare --disable-sandboxing -y"
     @@ run "opam switch create default --empty"
   in
   stage1 @@ final
@@ -241,7 +238,7 @@ let load_cached ~cache_dir ~os_distribution ~os_version =
     None
 
 let build ~sw env ~cache_dir ~os_distribution ~os_version ~arch
-    ~opam_repositories ~uid ~gid ?digest () =
+    ~uid ~gid ?digest () =
   let base_dir = Fpath.(cache_dir / "base") in
   let marker = Fpath.(base_dir / "fs" / "usr") in
   let image = Printf.sprintf "%s:%s" os_distribution os_version in
@@ -252,15 +249,9 @@ let build ~sw env ~cache_dir ~os_distribution ~os_version ~arch
     Log.info (fun m -> m "Building base image from %s:%s"
       os_distribution os_version);
     let temp_dir = Bos.OS.Dir.tmp "day11_base_%s" |> Result.get_ok in
-    (* Copy all opam repositories into Docker build context *)
-    List.iteri (fun i opam_repository ->
-      let repo_dest = Fpath.(temp_dir /
-        Printf.sprintf "opam-repository-%d" i) in
-      (match Day11_sys.Tree.copy ~source:opam_repository ~target:repo_dest with
-       | Ok () -> ()
-       | Error (`Msg e) ->
-           Log.err (fun m -> m "Failed to copy opam-repository %d: %s" i e))
-    ) opam_repositories;
+    (* The base image no longer bakes any opam-repository — builds mount
+       a per-package slice at run time — so nothing repo-related needs
+       staging into the Docker build context. *)
     (* Copy opam-build binary into Docker context if available *)
     let has_opam_build_bin =
       let cached = Fpath.(cache_dir / "opam-build-bin") in
@@ -273,7 +264,6 @@ let build ~sw env ~cache_dir ~os_distribution ~os_version ~arch
     in
     let dockerfile =
       generate_dockerfile ~os_distribution ~os_version ~arch ~uid ~gid
-        ~repo_count:(List.length opam_repositories)
         ~has_opam_build_bin ?digest ()
     in
     let dockerfile_path = Fpath.(temp_dir / "Dockerfile") in

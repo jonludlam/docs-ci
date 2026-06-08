@@ -183,17 +183,13 @@ let v_for_profile ~config ~eio_env ~cache_dir:_ ?cpu_slots
       ~cache_dir:ctx.cache_dir
       ~profile_name:profile.name
       ctx.repos_with_shas in
-  let merged_repo_dir = Fpath.(snapshot_dir / "merged-repo") in
-  (match Day11_opam_layer.Opam_repo.build_merged
-           ~dest:merged_repo_dir profile.opam_repositories with
-   | Ok () -> ()
-   | Error (`Msg e) ->
-     Log.err (fun f -> f "[%s] failed to build merged repo: %s"
-       profile.name e);
-     failwith e);
-  let repo_mount = Day11_container.Mount.bind_ro
-    ~src:(Fpath.to_string merged_repo_dir)
-    "/home/opam/.opam/repo/default" in
+  (* NB: we deliberately do NOT mount a full merged opam-repository at
+     [/home/opam/.opam/repo/default]. Each build mounts a per-package
+     slice there (Container_backend.build, from [~opam_repositories]),
+     and a build only ever needs its own package (deps are pre-installed
+     in the overlay). Mounting the full ~18k-package repo on top
+     shadowed that slice and made opam canonicalise/scan all ~18k
+     packages on every switch-state load — several seconds per node. *)
   let opam_build_mnt =
     match Day11_opam_build.Base.opam_build_mount
             ~cache_dir:ctx.cache_dir
@@ -201,8 +197,8 @@ let v_for_profile ~config ~eio_env ~cache_dir:_ ?cpu_slots
             () with
     | Some m -> [ m ] | None -> []
   in
-  let doc_mounts = [ repo_mount ] @ opam_build_mnt in
-  let build_mounts = [ repo_mount ] @ opam_build_mnt in
+  let doc_mounts = opam_build_mnt in
+  let build_mounts = opam_build_mnt in
   let opam_repos_fpath = List.map Fpath.v profile.opam_repositories in
   let target_solutions = List.map (fun (s : Day11_solver.solution) ->
     (s.target, s.solve_result)

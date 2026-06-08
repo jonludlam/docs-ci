@@ -127,3 +127,28 @@ val write_template :
     once a host substitutes the placeholder for a real rootfs path
     (e.g. an overlay merging the base image with the layer's
     transitive deps) the bundle is directly runc-runnable. *)
+
+val instantiate_template :
+  root:string ->
+  Yojson.Safe.t ->
+  (Yojson.Safe.t, [> Rresult.R.msg ]) result
+(** [instantiate_template ~root json] takes a template-mode
+    [config.json] (as produced by {!write_template}) and returns it
+    with {!placeholder_root} replaced by the real rootfs path [root].
+    This is the inverse half of {!write_template}: it lets a tool
+    replay a recorded bundle without re-deriving the spec. Since a
+    template is concrete JSON parameterized only by [root.path], this
+    substitutes that one field rather than parsing back into a {!t}.
+    Errors if [json] isn't a recognisable template (no [root.path], or
+    [root.path] isn't {!placeholder_root} - e.g. already instantiated). *)
+
+val instantiate_template_file :
+  template:Fpath.t ->
+  root:string ->
+  bundle_dir:Fpath.t ->
+  (unit, [> Rresult.R.msg ]) result
+(** [instantiate_template_file ~template ~root ~bundle_dir] reads the
+    template [config.json] at [template], substitutes [root] for
+    {!placeholder_root} (via {!instantiate_template}), and writes the
+    result as [bundle_dir/config.json] - a bundle directly runnable by
+    {{!Runc.run}runc}. *)

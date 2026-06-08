@@ -32,6 +32,16 @@ let opam_build_strategy ?patches pkg =
       " " ^ Patches.patch_args p pkg
     | _ -> ""
   in
+  (* TEMPORARY DIAGNOSTIC: run opam-build *under* strace from launch (not
+     attach-after — the container lacks CAP_SYS_PTRACE, but tracing one's
+     own child is allowed). [-ttt -T] gives absolute timestamps + per-call
+     duration so the ~3.5s "load switch state" stall shows up as a single
+     long syscall (or a wait4 on a slow child). The trace lands at
+     /home/opam/strace.log, captured into the layer's fs/ for inspection.
+     No [-f]: keep it to opam-build's main process (the switch load is
+     in-process; a slow child still surfaces as a long wait4 gap). Falls
+     back to a plain run if strace can't be installed, so builds never
+     break. Revert to the plain [opam-build -v ...] once diagnosed. *)
   { Types.cmd = Printf.sprintf "opam-build -v %s%s" pkg_str patch_args;
     cleanup = opam_build_cleanup }
 
@@ -79,7 +89,8 @@ let opam_build_prep_upper ~sw env ~uid ~gid ~upper ~lowers =
       Bos.Cmd.(v "chown" % "-R" % Printf.sprintf "%d:%d" uid gid
                % Fpath.to_string home_dir))
 
-(** Collect transitive dep layer dirs from a build node.
+(** Collect the transitive dep layer hashes of a build node, in the
+    order they are stacked as overlayfs lowers.
 
     Returned in deterministic DFS post-order: every dep appears after
     all its own deps, with duplicates removed by first occurrence.
@@ -94,8 +105,13 @@ let opam_build_prep_upper ~sw env ~uid ~gid ~upper ~lowers =
     non-deterministic. For lablgl builds in particular this made
     opam alternately report [libglu1-mesa-dev] as installed or
     uninstalled depending on whichever layer's [dpkg/status] ended
-    up topmost — leading to flaky build outcomes. *)
-let collect_transitive_dep_dirs ~os_dir (node : Build.t) =
+    up topmost — leading to flaky build outcomes.
+
+    This is the source of truth for the lower-stack order. It is
+    recorded verbatim in [build.json] ([Build_meta.t.stack]) so a tool
+    replaying the build reconstructs the identical rootfs without
+    re-deriving the DAG ordering. *)
+let collect_transitive_dep_hashes (node : Build.t) =
   let seen = Hashtbl.create 16 in
   let acc = ref [] in
   let rec walk (b : Build.t) =
@@ -106,11 +122,37 @@ let collect_transitive_dep_dirs ~os_dir (node : Build.t) =
     end
   in
   List.iter walk node.deps;
+  List.rev !acc
+
+(** Collect transitive dep layer dirs from a build node, in
+    overlay-stack order. The dir-level view of
+    {!collect_transitive_dep_hashes}. *)
+let collect_transitive_dep_dirs ~os_dir (node : Build.t) =
   List.map (fun hash -> Layer.dir (Layer.of_hash ~os_dir hash))
-    (List.rev !acc)
+    (collect_transitive_dep_hashes node)
+
+(** Transitive dependency packages of a build node (the full closure,
+    deduped). The per-package repo slice mounted at [repo/default] must
+    contain {b every} package opam will see as installed — i.e. [node.pkg]
+    plus this closure — otherwise opam's switch-state load fails with
+    "No definition found for the following installed packages" (it looks
+    up each installed package's opam definition in the repo). A 1-package
+    slice is too narrow; the full ~18k-package repo is too broad (slow). *)
+let collect_transitive_dep_pkgs (node : Build.t) =
+  let seen = Hashtbl.create 16 in
+  let acc = ref [] in
+  let rec walk (b : Build.t) =
+    if not (Hashtbl.mem seen b.hash) then begin
+      Hashtbl.replace seen b.hash ();
+      List.iter walk b.deps;
+      acc := b.pkg :: !acc
+    end
+  in
+  List.iter walk node.deps;
+  List.rev !acc
 
 let build ~sw env (benv : Types.build_env)
-    ?(opam_repositories = []) ?(mounts = [])
+    ~opam_repositories ?(mounts = [])
     ?patches ?build_dirs ?prep_upper
     ?strategy (node : Build.t) ~target_fs () =
   let os_dir = benv.os_dir in
@@ -132,8 +174,12 @@ let build ~sw env (benv : Types.build_env)
       let temp = Bos.OS.Dir.tmp "day11_repo_%s" |> Result.get_ok in
       match Day11_opam_layer.Opam_repo.create temp with
       | Ok repo_dir ->
+          (* Slice must hold [node.pkg] AND its whole installed-dep
+             closure — opam resolves every installed package's definition
+             against the repo at switch-state load. *)
+          let pkgs = node.pkg :: collect_transitive_dep_pkgs node in
           let _ = Day11_opam_layer.Opam_repo.populate ~opam_repo:repo_dir
-            ~opam_repositories [ node.pkg ] in
+            ~opam_repositories pkgs in
           [ Day11_container.Mount.bind_ro
               ~src:(Fpath.to_string repo_dir)
               "/home/opam/.opam/repo/default" ]
@@ -148,7 +194,23 @@ let build ~sw env (benv : Types.build_env)
       ) patch_files
     | _ -> []
   in
-  let all_mounts = repo_mounts @ patch_mounts @ mounts in
+  (* The container runs with hostname "builder" (see [opam_build_spec]).
+     We launch via runc, which — unlike [docker run] — does NOT populate
+     [/etc/hosts], and the base image's is empty. So resolving "builder"
+     (which opam and sudo both do during a build) misses [files] and
+     falls through to DNS, stalling several seconds per build. Provide a
+     minimal [/etc/hosts] that resolves the hostname locally, exactly as
+     day10 did. The file is constant, so we keep one under [os_dir]
+     rather than minting a temp per build. *)
+  let hosts_mount =
+    let hosts_file = Fpath.(os_dir / "etc-hosts") in
+    match Bos.OS.File.write hosts_file "127.0.0.1\tlocalhost builder\n" with
+    | Ok () ->
+      [ Day11_container.Mount.bind_ro
+          ~src:(Fpath.to_string hosts_file) "/etc/hosts" ]
+    | Error _ -> []
+  in
+  let all_mounts = hosts_mount @ repo_mounts @ patch_mounts @ mounts in
   (* Acquire a CPU slot if the env has a pool; fibre-blocks until one
      is free. Within the slot's lifetime, nproc inside the container
      reports the slot size, so nested [make -j$(nproc)] self-limits. *)

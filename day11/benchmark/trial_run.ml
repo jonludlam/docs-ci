@@ -112,7 +112,6 @@ let () =
       Printf.printf "Building base image...\n%!";
       Day11_opam_build.Base.build ~sw env ~cache_dir:scratch_cache
         ~os_distribution:"debian" ~os_version:"bookworm" ~arch:"x86_64"
-        ~opam_repositories:[Fpath.v opam_repository]
         ~uid:(Unix.getuid ()) ~gid:(Unix.getgid ()) ()
       |> Result.get_ok
   in
@@ -250,7 +249,7 @@ let () =
         ~on_cascade:(fun ~failed:_ ~failed_dep:_ -> incr failed)
         nodes
         (fun node ->
-          match Day11_opam_build.Build_layer.build ~sw env benv node () with
+          match Day11_opam_build.Build_layer.build ~sw env benv ~opam_repositories:[] node () with
           | Day11_opam_build.Types.Success _ -> true
           | _ -> false));
     total_builds := !total_builds + !built;

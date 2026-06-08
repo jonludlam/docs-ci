@@ -79,8 +79,16 @@ module Make_op (L : LABEL) = struct
   let label = L.label
   let id = "day11-" ^ L.label
 
+  (* Short layer hash, matching the 12-char layer-dir naming, so a job
+     can be tied to its on-disk layer ([<os_dir>/<hash>]) at a glance. *)
+  let short_hash h = String.sub h 0 (min 12 (String.length h))
+
+  (* Include the layer hash in the job's display name so it shows in the
+     OCurrent "New job:" line and the /jobs dashboard, not just in the
+     job's body log. *)
   let pp f (key : Key.t) =
-    Fmt.pf f "%s %s" label (OpamPackage.to_string key.pkg)
+    Fmt.pf f "%s %s (%s)" label (OpamPackage.to_string key.pkg)
+      (short_hash key.hash)
 
   let auto_cancel = false
 
@@ -106,9 +114,10 @@ module Make_op (L : LABEL) = struct
       Log.debug (fun f -> f "[%s] cache hit: %s %s %s"
         ctx.profile_name label
         (OpamPackage.to_string key.pkg)
-        (String.sub key.hash 0 (min 12 (String.length key.hash))));
-      Current.Job.log job "Cached: %s %s" label
-        (OpamPackage.to_string key.pkg);
+        (short_hash key.hash));
+      Current.Job.log job "Cached: %s %s (%s)" label
+        (OpamPackage.to_string key.pkg)
+        (short_hash key.hash);
       Ok Value.{
         pkg = OpamPackage.to_string key.pkg;
         hash = key.hash;
@@ -118,10 +127,10 @@ module Make_op (L : LABEL) = struct
       Log.info (fun f -> f "[%s] cache miss: %s %s %s"
         ctx.profile_name label
         (OpamPackage.to_string key.pkg)
-        (String.sub key.hash 0 (min 12 (String.length key.hash))));
+        (short_hash key.hash));
       Current.Job.log job "%s %s (%s)" label
         (OpamPackage.to_string key.pkg)
-        (String.sub key.hash 0 (min 12 (String.length key.hash)));
+        (short_hash key.hash);
       let success = ctx.dispatch ctx.env ctx.dag_node in
       (match Bos.OS.File.read (Day11_layer.Layer.log_path layer) with
        | Ok contents -> Current.Job.write job contents

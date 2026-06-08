@@ -64,7 +64,7 @@ let build_docs ~sw env benv ~os_dir ~odoc_tool ~pkg_build ~pkg =
     { hash = compile_hash; pkg;
       deps = pkg_build.deps @ [ pkg_build ]; universe = Day11_solution.Universe.dummy } in
   let compile_build = match
-    Build_layer.build ~sw env benv ~mounts:all_mounts
+    Build_layer.build ~sw env benv ~opam_repositories:[] ~mounts:all_mounts
       compile_node ~strategy:{ cmd = compile_cmd; cleanup = fun ~sw:_ _ _ -> () } ()
   with
     | Types.Success bl ->
@@ -91,7 +91,7 @@ let build_docs ~sw env benv ~os_dir ~odoc_tool ~pkg_build ~pkg =
     { hash = link_hash; pkg;
       deps = pkg_build.deps @ [ pkg_build; compile_build ]; universe = Day11_solution.Universe.dummy } in
   let html_count = match
-    Build_layer.build ~sw env benv ~mounts:all_mounts
+    Build_layer.build ~sw env benv ~opam_repositories:[] ~mounts:all_mounts
       link_node ~strategy:{ cmd = link_cmd; cleanup = fun ~sw:_ _ _ -> () } ()
   with
     | Types.Success bl ->
@@ -154,7 +154,7 @@ let test_astring_docs () = with_eio @@ fun ~sw env ->
     ~on_complete:(fun ~stats:_ ~cached:_ _ _ -> ())
     ~on_cascade:(fun ~failed:_ ~failed_dep:_ -> ())
     astring_nodes
-    (fun node -> match Build_layer.build ~sw env benv node () with
+    (fun node -> match Build_layer.build ~sw env benv ~opam_repositories:[] node () with
       | Types.Success _ -> true | _ -> false);
   let astring_build = List.find (fun (n : build) ->
     OpamPackage.equal n.pkg astring_pkg) astring_nodes in

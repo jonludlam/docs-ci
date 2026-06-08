@@ -41,7 +41,7 @@ val build :
   sw:Eio.Switch.t ->
   Eio_unix.Stdenv.base ->
   Types.build_env ->
-  ?opam_repositories:Fpath.t list ->
+  opam_repositories:Fpath.t list ->
   ?snapshot_repos:Fpath.t list ->
   ?mounts:Day11_container.Mount.t list ->
   ?patches:Patches.t ->
@@ -62,6 +62,10 @@ val build :
       that day11's pipeline has always used. {!Native_backend}
       (Phase 2) is an alternative for host-native builds without
       sudo.
+    @param opam_repositories Repo source paths the backend extracts a
+      one-package slice from to mount as the container's [default]
+      repo. Required (see {!Backend.S.build}): pass [[]] only to
+      deliberately fall back to the base image's full opam-repository.
     @param snapshot_repos Source repositories from which to take a
       one-package opam-repository slice for the layer dir's
       [opam-repository/] subdir. Defaults to [opam_repositories]

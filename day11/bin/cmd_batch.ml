@@ -334,21 +334,14 @@ let run profile_name profile_dir np cores_per_build overcommit
   in
   let benv = ctx.benv in
   Day11_opam_build.Types.ensure_dirs benv;
-  (* Create merged opam-repository and mount into containers —
-     picks up changes without rebuilding the base image *)
-  let merged_repo_dir = Fpath.(snapshot_dir / "merged-repo") in
-  ignore (Day11_sys.Sudo.rm_rf ~sw env merged_repo_dir);
-  (match Day11_opam_layer.Opam_repo.build_merged
-           ~dest:merged_repo_dir profile.opam_repositories with
-   | Ok () -> ()
-   | Error (`Msg e) ->
-     Printf.eprintf "Failed to build merged repo: %s\n%!" e; exit 1);
-  let repo_mount = Day11_container.Mount.bind_rw
-    ~src:(Fpath.to_string merged_repo_dir)
-    "/home/opam/.opam/repo/default" in
+  (* No full merged-repo mount at [/home/opam/.opam/repo/default]: each
+     build mounts a per-package slice there (Container_backend.build,
+     from [~opam_repositories]) and only needs its own package — deps
+     are pre-installed in the overlay. Mounting the whole ~18k-package
+     repo on top shadowed that slice and made opam scan all of it on
+     every switch-state load (multi-second stall per build). *)
   let opam_build_repo = Option.map Fpath.v profile.opam_build_repo in
   let base_mounts =
-    [ repo_mount ] @
     (match Day11_opam_build.Base.opam_build_mount ~cache_dir
              ?opam_build_repo () with
      | Some m -> [ m ] | None -> [])
@@ -374,6 +367,7 @@ let run profile_name profile_dir np cores_per_build overcommit
       else None
     in
     match Day11_opam_build.Build_layer.build ~sw env benv ?patches
+            ~opam_repositories:snapshot_repos
             ~mounts:base_mounts ~snapshot_repos node ?strategy () with
     | Day11_opam_build.Types.Success _ -> true
     | _ -> false
@@ -449,7 +443,7 @@ let run profile_name profile_dir np cores_per_build overcommit
    | Some dir ->
      let output = Fpath.to_string Fpath.(cache_dir / "jtw-output") in
      Day11_jtw.Build_tools.build_and_run ~sw env benv ~np ~os_dir
-       ~packages:git_packages ~repos:repos_with_shas ~mounts:[repo_mount]
+       ~packages:git_packages ~repos:repos_with_shas ~mounts:base_mounts
        ~extra_repo_dirs:extra_pins ~repo_dir:dir ~output
        ~nodes ~solutions:build_solutions
    | None -> ());
