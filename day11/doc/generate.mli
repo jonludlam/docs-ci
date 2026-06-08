@@ -77,6 +77,12 @@ type doc_plan = {
       compile, link, doc-all). The per-call switch lets external
       executors (e.g. OCurrent nodes) bound the lifetime of spawned
       subprocesses to each build attempt. *)
+  epoch_hash : string;
+  (** Epoch hash for this doc run (see {!Day11_lib.Epoch.compute}). The
+      doc stages write HTML into [epoch_base/epoch-<epoch_hash>/html]. *)
+  epoch_base : Fpath.t;
+  (** The profile's HTML base dir, under which epoch dirs and the
+      [html-live] symlink live. *)
 }
 
 val plan_doc_dag :

@@ -50,6 +50,17 @@ let load_profiles ~profile_dir names : Day11_batch.Profile.t list =
 let main () current_config github_auth mode profiles_arg profile_dir_arg
     cache_dir_arg remotes_arg pin_overlays_arg cores_per_build overcommit
     config : unit =
+  (* The epoch-promote node runs at [Current.Level.Dangerous]. By default
+     OCurrent's [--confirm] is unset (nothing is gated), so it would fire
+     immediately — defeating the manual-promote design. Default the
+     confirmation threshold to [Dangerous] so *only* promotion waits for a
+     click in the web UI; all the build/prep ops run at [Average] or below
+     and so still run unattended. An explicit [--confirm] (or the web UI
+     slider) overrides this. *)
+  (match Current.Config.get_confirm current_config with
+   | Some _ -> ()
+   | None ->
+     Current.Config.set_confirm current_config (Some Current.Level.Dangerous));
   let profile_dir =
     Fpath.v (match profile_dir_arg with
       | Some d -> d

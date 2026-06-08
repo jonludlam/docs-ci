@@ -2,13 +2,19 @@
 #
 # Two responsibilities:
 #   1. Serve rendered HTML straight from the day11 cache.
-#      day11 lays each profile's docs out at
-#      [<cache>/html-<profile>/p/<pkg>/<ver>/doc/index.html],
-#      and the daemon links to [/profiles/<NAME>/docs/p/<pkg>/<ver>/...].
+#      Each profile's docs are built into a per-toolchain epoch dir and
+#      exposed through a [html-live] symlink that's swapped manually on
+#      promotion. day11 lays a profile's live docs out at
+#      [<cache>/html-<profile>/html-live/p/<pkg>/<ver>/doc/index.html]
+#      (html-live -> epoch-<hash>/html), and the daemon links to
+#      [/profiles/<NAME>/docs/p/<pkg>/<ver>/...].
 #      The .day11 volume is mounted read-only at /srv (Caddy keeps its
 #      own state on /data, so we can't reuse that path), and the per-arch
-#      cache root is a subdir — so docs live under
-#      [/srv/cache/debian-bookworm-x86_64/html-<profile>/].
+#      cache root is a subdir — so live docs are under
+#      [/srv/cache/debian-bookworm-x86_64/html-<profile>/html-live/].
+#      The html-live symlink is *relative* (epoch-<hash>/html), so it
+#      resolves within /srv. Until the first promote, html-live is absent
+#      and these routes 404 (the rest of the site still proxies fine).
 #   2. Reverse-proxy everything else to the daemon's web UI on :8080 —
 #      the dashboard, snapshot pages, /job/ log viewer, diff pages, etc.
 
@@ -26,7 +32,7 @@
 	# Capture 1 is the profile, capture 2 the path within its html tree.
 	@docs path_regexp docs ^/profiles/([^/]+)/docs/(.*)$
 	handle @docs {
-		root * /srv/cache/debian-bookworm-x86_64/html-{re.docs.1}
+		root * /srv/cache/debian-bookworm-x86_64/html-{re.docs.1}/html-live
 		rewrite * /{re.docs.2}
 		# odoc trees carry an index.html in every directory; serve it for
 		# bare-directory requests. Missing files 404 (file_server default).
