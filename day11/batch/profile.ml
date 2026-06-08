@@ -163,11 +163,12 @@ let save ~dir t =
   with exn ->
     Rresult.R.error_msgf "Profile.save: %s" (Printexc.to_string exn)
 
-(* Resolve a profile [opam_repositories] entry against the .day11 root.
-   Absolute entries are returned unchanged; a relative entry such as
-   ["overlays/odoc-master/repo"] is taken relative to [day11_dir], so
+(* Resolve a profile path against the .day11 root. Absolute entries are
+   returned unchanged; a relative entry such as ["overlays/odoc-master/repo"]
+   or ["cache/.../html-quick"] is taken relative to [day11_dir], so
    profiles needn't bake in an absolute [/home/app] prefix and stay
-   portable across hosts / containers. *)
+   portable across hosts / containers (the daemon's HOME differs between
+   the host and the container). Applied to every path-valued field. *)
 let resolve_repo ~day11_dir s =
   if Filename.is_relative s then
     Fpath.(day11_dir // v s |> normalize |> to_string)
@@ -183,11 +184,20 @@ let load ~dir ~name =
       | Error _ as e -> e
       | Ok profile ->
         (* [dir] is the [profiles/] dir, so its parent is the .day11
-           root that relative repo paths resolve against. *)
+           root that relative paths resolve against. Resolve every
+           path-valued field, not just [opam_repositories] — e.g.
+           [html_dir] was left as an absolute container path and failed
+           to bind-mount when the daemon ran on the host. *)
         let day11_dir = Fpath.parent dir in
+        let r = resolve_repo ~day11_dir in
+        let ro = Option.map r in
         Ok { profile with
-             opam_repositories =
-               List.map (resolve_repo ~day11_dir) profile.opam_repositories }
+             opam_repositories = List.map r profile.opam_repositories;
+             odoc_repo = ro profile.odoc_repo;
+             opam_build_repo = ro profile.opam_build_repo;
+             jtw_repo = ro profile.jtw_repo;
+             patches_dir = ro profile.patches_dir;
+             html_dir = ro profile.html_dir }
     with exn ->
       Rresult.R.error_msgf "Profile.load %s: %s" name (Printexc.to_string exn)
 

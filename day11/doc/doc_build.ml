@@ -182,6 +182,10 @@ let link ~sw env benv ~(config : doc_config) ~build_layer
     let blessed = config.blessed in
     let all_compile_dirs =
       build_deps_layers @ (compile_layer :: dep_compile_layers) in
+    (* The HTML output dir is the bind-mount source; runc fails to start
+       if it doesn't exist. Top-level callers create it, but ensure it
+       here too so a link node never fails on a missing output dir. *)
+    ignore (Bos.OS.Dir.create ~path:true html_dir);
     let html_mount = Day11_container.Mount.bind_rw
       ~src:(Fpath.to_string html_dir)
       Odoc_store.container_html in
@@ -223,6 +227,9 @@ let doc_all ~sw env benv ~(config : doc_config) ~build_layer
   | None -> Error "no documentable libraries"
   | Some (universe, mounts, prep_dir) ->
     let blessed = config.blessed in
+    (* Ensure the HTML output dir exists — it's the bind-mount source
+       and runc fails to start without it (see [link]). *)
+    ignore (Bos.OS.Dir.create ~path:true html_dir);
     let html_mount = Day11_container.Mount.bind_rw
       ~src:(Fpath.to_string html_dir)
       Odoc_store.container_html in

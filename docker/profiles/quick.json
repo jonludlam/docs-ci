@@ -259,5 +259,5 @@
   "patches_dir": null,
   "base_image_digest": null,
   "base_image_updated": null,
-  "html_dir": "/home/app/.day11/cache/debian-bookworm-x86_64/html-quick"
+  "html_dir": "cache/debian-bookworm-x86_64/html-quick"
 }
