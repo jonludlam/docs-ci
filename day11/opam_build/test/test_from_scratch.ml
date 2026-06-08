@@ -33,7 +33,7 @@ let test_from_scratch () = with_eio @@ fun ~sw env ->
     os_distribution os_version;
   let base = Base.build ~sw env ~cache_dir
     ~os_distribution ~os_version ~arch
-    ~opam_repositories:[Fpath.v opam_repository] ~uid:1000 ~gid:1000 ()
+    ~uid:1000 ~gid:1000 ()
     |> ok_or_fail "base build" in
   Printf.printf "Base: %s\n%!" (Fpath.to_string base.dir);
   let find_opam = Day11_opam.Git_packages.find_package git_packages in

@@ -1,8 +1,8 @@
 {
   "name": "ocaml-odoc-master",
   "opam_repositories": [
-    "/home/app/ocaml/opam-repository",
-    "/home/app/.day11/overlays/odoc-master/repo"
+    "repo/opam-repository",
+    "overlays/odoc-master/repo"
   ],
   "odoc_repo": null,
   "opam_build_repo": null,

@@ -51,7 +51,7 @@ let test_voodoo_astring () = with_eio @@ fun ~sw env ->
       deps = driver_tool.builds; universe = Day11_solution.Universe.dummy } in
   let astring_result =
     Day11_opam_build.Build_layer.build ~sw env benv
-      astring_node ()
+      ~opam_repositories:[] astring_node ()
   in
   (match astring_result with
    | Day11_opam_build.Types.Success bl ->

@@ -1,8 +1,8 @@
 {
   "name": "oxcaml",
   "opam_repositories": [
-    "/home/app/ocaml/opam-repository",
-    "/home/app/oxcaml/opam-repository"
+    "repo/opam-repository",
+    "repo/oxcaml/opam-repository"
   ],
   "odoc_repo": null,
   "opam_build_repo": null,

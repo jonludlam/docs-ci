@@ -129,13 +129,14 @@ let ensure_base ~sw env ctx =
     if base_materialised ctx.base then Ok ctx
     else begin
       let uid = Unix.getuid () and gid = Unix.getgid () in
-      let opam_repositories = List.map Fpath.v
-        ctx.profile.opam_repositories in
+      (* The base image is repo-agnostic now (empty [default] repo;
+         per-package slices are mounted at build time), so it takes no
+         [opam_repositories]. *)
       match Day11_opam_build.Base.build ~sw env ~cache_dir:ctx.cache_dir
               ~os_distribution:ctx.profile.os_distribution
               ~os_version:ctx.profile.os_version
               ~arch:ctx.profile.arch
-              ~opam_repositories ~uid ~gid
+              ~uid ~gid
               ?digest:ctx.profile.base_image_digest ()
       with
       | Ok base -> Ok (rebuild_base_with ~base ctx)

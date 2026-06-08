@@ -76,7 +76,7 @@ let () =
       ~on_cascade:(fun ~failed:_ ~failed_dep:_ -> ())
       nodes
       (fun node ->
-        match Day11_opam_build.Build_layer.build ~sw env benv node () with
+        match Day11_opam_build.Build_layer.build ~sw env benv ~opam_repositories:[] node () with
         | Day11_opam_build.Types.Success _ -> true
         | _ -> false)) in
   (* Second pass: time cache hits *)
@@ -87,7 +87,7 @@ let () =
       OpamPackage.equal n.pkg pkg) nodes with
     | Some node ->
       ignore (time (Printf.sprintf "Build %s (cache hit)" pkg_str) (fun () ->
-        Day11_opam_build.Build_layer.build ~sw env benv node ()))
+        Day11_opam_build.Build_layer.build ~sw env benv ~opam_repositories:[] node ()))
     | None -> ()
   ) test_packages;
   (* Third pass: clear individual layers and time cold rebuilds *)
@@ -101,7 +101,7 @@ let () =
       (* Delete just this layer to force rebuild *)
       ignore (Day11_sys.Sudo.rm_rf ~sw env layer_dir);
       ignore (time (Printf.sprintf "Build %s (cold)" pkg_str) (fun () ->
-        Day11_opam_build.Build_layer.build ~sw env benv node ()))
+        Day11_opam_build.Build_layer.build ~sw env benv ~opam_repositories:[] node ()))
     | None -> ()
   ) test_packages;
   Printf.printf "\nDone.\n%!"

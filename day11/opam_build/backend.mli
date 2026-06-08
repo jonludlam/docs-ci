@@ -29,7 +29,7 @@ module type S = sig
     sw:Eio.Switch.t ->
     Eio_unix.Stdenv.base ->
     Types.build_env ->
-    ?opam_repositories:Fpath.t list ->
+    opam_repositories:Fpath.t list ->
     ?mounts:Day11_container.Mount.t list ->
     ?patches:Patches.t ->
     ?build_dirs:Fpath.t list ->
@@ -51,6 +51,15 @@ module type S = sig
       - {b moving / placing the captured files at [target_fs]}
         — [target_fs] must not exist beforehand; the backend
         creates it
+
+      [opam_repositories] are the repo source paths a per-package slice
+      is extracted from (just [node.pkg]) and mounted as the container's
+      [default] repo, so opam only sees the one package rather than the
+      whole opam-repository baked into the base image. It is {b required}
+      (not optional) on purpose: a build only ever needs its own
+      package, so omitting it used to silently fall back to the full
+      base repo — a several-second switch-state load per node. Pass [[]]
+      to deliberately opt into that fallback.
 
       Returns [(run, timing)] — [run.status] is the build's exit
       code; [timing] is a per-phase timing alist for [layer.json]'s

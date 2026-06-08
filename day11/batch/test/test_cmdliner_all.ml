@@ -97,7 +97,7 @@ let test_all_cmdliner () = with_eio @@ fun ~sw env ->
       Atomic.incr cascaded)
     nodes
     (fun node ->
-      match Build_layer.build ~sw env benv node () with
+      match Build_layer.build ~sw env benv ~opam_repositories:[] node () with
       | Types.Success _bl -> true
       | _ -> false);
   let elapsed = Unix.gettimeofday () -. t0 in

@@ -117,12 +117,22 @@ let read_pipes ?(on_idle = fun () -> ()) r_out r_err =
   (Buffer.contents stdout_buf, Buffer.contents stderr_buf)
 
 (* Wait for [worker_pid] with a parent-death watchdog: poll
-   [waitpid WNOHANG] with a short sleep; if our original parent dies
-   (ppid changes from [orig_ppid]), SIGKILL the worker and exit — so
-   a [kill -9] on the top-level process cascades down and doesn't
-   leave solver/build processes burning CPU. *)
+   [waitpid WNOHANG]; if our original parent dies (ppid changes from
+   [orig_ppid]), SIGKILL the worker and exit — so a [kill -9] on the
+   top-level process cascades down and doesn't leave solver/build
+   processes burning CPU.
+
+   The poll interval starts tiny (5ms) and backs off, capped at 0.5s.
+   The vast majority of privileged commands (overlay mount/umount,
+   chown, rm) finish in milliseconds, so the old fixed 1.0s sleep
+   added ~1s of pure latency to *every* one — and a layer build runs
+   6-8 of them, so ~6-8s of dead time per build regardless of package
+   size. Fine-grained early polling catches those immediately; the
+   back-off keeps long-running commands (the build container itself,
+   which can run for minutes) from busy-spinning while still bounding
+   parent-death detection to 0.5s. *)
 let wait_with_watchdog ~orig_ppid worker_pid =
-  let rec loop () =
+  let rec loop delay =
     match Unix.waitpid [ WNOHANG ] worker_pid with
     | 0, _ ->
       if Unix.getppid () <> orig_ppid then begin
@@ -130,14 +140,14 @@ let wait_with_watchdog ~orig_ppid worker_pid =
         (try ignore (Unix.waitpid [] worker_pid) with _ -> ());
         exit 0
       end;
-      (try Unix.sleepf 1.0
+      (try Unix.sleepf delay
        with Unix.Unix_error (Unix.EINTR, _, _) -> ());
-      loop ()
+      loop (Float.min 0.5 (delay *. 2.))
     | _pid, status -> status
     | exception Unix.Unix_error (Unix.ECHILD, _, _) ->
       Unix.WEXITED 127
   in
-  loop ()
+  loop 0.005
 
 let handle_connection fd =
   let orig_ppid = Unix.getppid () in

@@ -150,3 +150,52 @@ let write_template path t =
   with exn ->
     Rresult.R.error_msgf "Oci_spec.write_template %a: %s"
       Fpath.pp path (Printexc.to_string exn)
+
+(* A template config.json is concrete JSON in which only [root.path]
+   is parameterized (= [placeholder_root]). Instantiating it is just a
+   targeted substitution of that one field — no need to parse the whole
+   spec back into a [t]. We validate the shape so we never silently
+   accept a non-template (or already-instantiated) config.json. *)
+let instantiate_template ~root (json : Yojson.Safe.t) =
+  match json with
+  | `Assoc fields ->
+    (match List.assoc_opt "root" fields with
+     | Some (`Assoc root_fields) ->
+       (match List.assoc_opt "path" root_fields with
+        | Some (`String p) when p = placeholder_root ->
+          let root_fields' = List.map (fun (k, v) ->
+            if k = "path" then (k, `String root) else (k, v)) root_fields in
+          let fields' = List.map (fun (k, v) ->
+            if k = "root" then (k, `Assoc root_fields') else (k, v)) fields in
+          Ok (`Assoc fields')
+        | Some (`String p) ->
+          Rresult.R.error_msgf
+            "Oci_spec.instantiate_template: root.path is %S, not the \
+             template placeholder %S" p placeholder_root
+        | _ ->
+          Rresult.R.error_msg
+            "Oci_spec.instantiate_template: root.path missing or not a string")
+     | _ ->
+       Rresult.R.error_msg
+         "Oci_spec.instantiate_template: no root object")
+  | _ ->
+    Rresult.R.error_msg
+      "Oci_spec.instantiate_template: config.json is not a JSON object"
+
+let instantiate_template_file ~template ~root ~bundle_dir =
+  match
+    try Ok (Yojson.Safe.from_file (Fpath.to_string template))
+    with exn ->
+      Rresult.R.error_msgf "Oci_spec.instantiate_template_file: read %a: %s"
+        Fpath.pp template (Printexc.to_string exn)
+  with
+  | Error _ as e -> e
+  | Ok json ->
+    match instantiate_template ~root json with
+    | Error _ as e -> e
+    | Ok json ->
+      let path = Fpath.(bundle_dir / "config.json") in
+      try Yojson.Safe.to_file (Fpath.to_string path) json; Ok ()
+      with exn ->
+        Rresult.R.error_msgf "Oci_spec.instantiate_template_file: write %a: %s"
+          Fpath.pp path (Printexc.to_string exn)

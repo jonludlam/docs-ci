@@ -181,7 +181,7 @@ let test_parallel_real_builds () = with_eio @@ fun ~sw env ->
       Printf.printf "  CASCADE: %s\n%!" failed.hash)
     nodes
     (fun node ->
-      match Build_layer.build ~sw env benv node () with
+      match Build_layer.build ~sw env benv ~opam_repositories:[] node () with
       | Types.Success _bl -> true
       | _ -> false);
   Printf.printf "\n=== Results: %d succeeded, %d failed ===\n%!"

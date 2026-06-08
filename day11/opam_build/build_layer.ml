@@ -85,6 +85,7 @@ let record_input env ~layer ~node ~benv
       { Day11_opam_layer.Build_meta.pkg = OpamPackage.to_string d.pkg;
         hash = d.hash })
       node.Build.deps;
+    stack = Container_backend.collect_transitive_dep_hashes node;
     installed_libs = [];
     installed_docs = [];
     patches = (match patches with
@@ -187,6 +188,7 @@ let record_attempt env ~layer ~node ~benv ~timing ?patches
           { Day11_opam_layer.Build_meta.pkg = OpamPackage.to_string d.pkg;
             hash = d.hash })
           node.Build.deps;
+        stack = Container_backend.collect_transitive_dep_hashes node;
         installed_libs = [];
         installed_docs = [];
         patches = (match patches with
@@ -223,7 +225,7 @@ let record_setup_failure ~layer =
 (** Main entry point. *)
 let build ?(backend = (module Container_backend : Backend.S))
     ~sw env (benv : Types.build_env)
-    ?opam_repositories ?snapshot_repos ?mounts
+    ~opam_repositories ?snapshot_repos ?mounts
     ?patches ?build_dirs ?prep_upper
     ?(on_extract = fun ~layer_dir:_ ~success:_ -> ())
     (node : Build.t)
@@ -233,7 +235,7 @@ let build ?(backend = (module Container_backend : Backend.S))
      describe the source of opam metadata for this build. *)
   let snapshot_repos = match snapshot_repos with
     | Some r -> r
-    | None -> Option.value opam_repositories ~default:[]
+    | None -> opam_repositories
   in
   let os_dir = benv.os_dir in
   let pkg_str = OpamPackage.to_string node.pkg in
@@ -288,7 +290,7 @@ let build ?(backend = (module Container_backend : Backend.S))
             ~strategy:resolved_strategy ~snapshot_repos ();
           let target_fs = Layer.fs layer in
           match B.build ~sw env benv
-                  ?opam_repositories ?mounts ?patches ?build_dirs
+                  ~opam_repositories ?mounts ?patches ?build_dirs
                   ?prep_upper ~strategy:resolved_strategy node
                   ~target_fs () with
           | Ok (run, timing) ->

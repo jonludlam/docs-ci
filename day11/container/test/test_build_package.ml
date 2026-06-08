@@ -124,6 +124,7 @@ let build_package ~sw env ~cache_dir ~base_dir ~dep_layers ~pkg =
     let bm : Day11_opam_layer.Build_meta.t = {
       package = pkg;
       deps = [];
+      stack = [];
       installed_libs = [];
       installed_docs = [];
       patches = [];

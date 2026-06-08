@@ -17,7 +17,11 @@ let name_term =
 (* ── create ────────────────────────────────────────────────────── *)
 
 let opam_repo_term =
-  let doc = "opam-repository path (repeatable, layered in order)" in
+  let doc = "opam-repository path (repeatable, layered in order). \
+             Stored verbatim in the profile; a relative path is taken \
+             relative to the .day11 root (the profile dir's parent) \
+             when the profile is later loaded, so it needn't be \
+             absolute." in
   Arg.(non_empty & opt_all string [] &
        info [ "opam-repository" ] ~docv:"DIR" ~doc)
 

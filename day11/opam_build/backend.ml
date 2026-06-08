@@ -3,7 +3,7 @@ module type S = sig
     sw:Eio.Switch.t ->
     Eio_unix.Stdenv.base ->
     Types.build_env ->
-    ?opam_repositories:Fpath.t list ->
+    opam_repositories:Fpath.t list ->
     ?mounts:Day11_container.Mount.t list ->
     ?patches:Patches.t ->
     ?build_dirs:Fpath.t list ->

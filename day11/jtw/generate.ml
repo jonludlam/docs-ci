@@ -22,6 +22,7 @@ let generate_package ~sw env benv ~os_dir ~(jtw_tool : Tool.t) (node : build) =
       { hash; pkg = node.pkg;
         deps = jtw_tool.builds @ [ node ]; universe = Day11_solution.Universe.dummy } in
     match Day11_opam_build.Build_layer.build ~sw env benv
+            ~opam_repositories:[]
             jtw_node
             ~strategy:{ cmd; cleanup = fun ~sw:_ _ _ -> () } () with
     | Day11_opam_build.Types.Success bl ->
@@ -46,6 +47,7 @@ let build_worker ~sw env benv ~(jtw_tool : Tool.t) ~solution_nodes =
     { hash; pkg = dummy_pkg;
       deps = jtw_tool.builds @ solution_nodes; universe = Day11_solution.Universe.dummy } in
   match Day11_opam_build.Build_layer.build ~sw env benv
+          ~opam_repositories:[]
           worker_node
           ~strategy:{ cmd; cleanup = fun ~sw:_ _ _ -> () } () with
   | Day11_opam_build.Types.Success bl ->

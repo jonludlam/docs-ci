@@ -138,37 +138,38 @@ RUN chown ${UID}:${GID} /var/lib/ocurrent
 
 USER ${UID}:${GID}
 
-# Bake the two profiles the daemon expects ([--profiles=ocaml-odoc-
-# master,oxcaml] in docker-compose.yml) straight into the image. They
-# are committed as plain JSON under [docker/profiles/] and land in
-# [${HOME_DIR}/.day11/profiles/] — the daemon's default --profile-dir,
-# since HOME=${HOME_DIR}. Paths inside the JSON are absolute under
-# ${HOME_DIR}, matching the --remote / --github-pin-overlay / volume
-# targets in docker-compose.yml:
+# Bake the three profiles the daemon ships with straight into the
+# image. They are committed as plain JSON under [docker/profiles/] and
+# land in [${HOME_DIR}/.day11/profiles/] — the daemon's default
+# --profile-dir, since HOME=${HOME_DIR}. Their [opam_repositories] use
+# paths relative to the .day11 root ([repo/opam-repository],
+# [repo/oxcaml/opam-repository], [overlays/odoc-master/repo]), which
+# Profile.load resolves against ${HOME_DIR}/.day11 — matching the
+# --remote / --github-pin-overlay targets in docker-compose.yml:
 #
+#   quick             = mainline opam-repository, Jane Street pkgs only.
 #   ocaml-odoc-master = mainline opam-repository, with odoc pinned to
 #                       its master branch via the github-pin overlay
 #                       (layered last so it wins).
 #   oxcaml            = mainline opam-repository with the oxcaml overlay
 #                       layered on top.
 #   html_dir          = [<cache>/<os-dir>/html-<name>], exactly what the
-#                       nginx front-end serves as [/profiles/<name>/docs/].
+#                       Caddy front-end serves as [/profiles/<name>/docs/].
 #
-# These only survive to runtime because docker-compose.yml bind-mounts
-# *only* [.day11/cache] (and [.day11/snapshots]) from the host, not the
-# whole [.day11] tree — so this JSON isn't shadowed by a host mount.
-# mkdir first (as the runtime user) so [~/.day11] is user-owned and the
-# daemon can create [~/.day11/overlays/] under it at startup.
+# docker-compose.yml mounts the whole [.day11] tree as a single named
+# volume. A fresh named volume is seeded from the image's directory
+# contents (and uid:gid ownership) on first creation, so this baked
+# JSON — and the user-owned [repo/]/[overlays/] dirs below — survive
+# into the volume (a bind-mount would instead shadow them). mkdir as
+# the runtime user so the daemon can write under [~/.day11] at startup.
 #
-# Also create empty, user-owned parent dirs for the two opam-repository
-# mirrors. The daemon's [--remote] step runs [git clone] when
-# [<path>/.git] is absent, so it populates these itself on first run —
-# no opam-repository checkout is needed on the host. docker-compose.yml
-# mounts a named volume at each: a fresh volume inherits this uid:gid
-# ownership from the mount point (so the daemon can write) and then
-# persists the clone across container recreation.
+# [repo/] holds the opam-repository mirrors: the daemon's [--remote]
+# step runs [git clone] when [<path>/.git] is absent, populating them
+# on first run (git creates the [repo/...] leaf dirs itself) — no
+# checkout needed on the host. We pre-create [repo/] user-owned so the
+# clone has a writable parent in the seeded volume.
 RUN mkdir -p ${HOME_DIR}/.day11/profiles \
-      ${HOME_DIR}/.day11/overlays ${HOME_DIR}/ocaml ${HOME_DIR}/oxcaml
+      ${HOME_DIR}/.day11/overlays ${HOME_DIR}/.day11/repo
 COPY --chown=${UID}:${GID} docker/profiles/ ${HOME_DIR}/.day11/profiles/
 
 # Ensure TMPDIR exists and is owned by the runtime user before the

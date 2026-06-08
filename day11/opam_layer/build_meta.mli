@@ -25,6 +25,14 @@ type t = {
   deps : dep list;
   (** Direct dependencies with their layer hashes. Order is parallel
       to {!Day11_layer.Meta.t.parent_hashes}. *)
+  stack : string list;
+  (** Transitive dependency layer hashes in overlayfs-stack order —
+      the exact lower stack this build ran over (direct deps frontmost
+      / topmost). A superset of {!deps}, which lists only direct
+      dependencies; recording the full ordered closure lets a tool
+      reconstruct the rootfs without walking and re-ordering the
+      dependency DAG itself. Empty in older [build.json] files (fall
+      back to deriving it from the DAG). *)
   installed_libs : string list;
   (** Files under [/home/opam/.opam/default/lib/] that this build
       installed. Discovered by {!Installed_files.scan_libs} after
