@@ -99,7 +99,13 @@ services:
     depends_on:
       - daemon
     ports:
+      # 80 for the ACME HTTP-01 challenge + HTTP->HTTPS redirect, 443 for
+      # TLS (and 443/udp for HTTP/3). Caddy auto-provisions a Let's Encrypt
+      # cert for the domain named in the Caddyfile; both must be reachable
+      # from the internet for issuance to succeed.
       - "80:80"
+      - "443:443"
+      - "443:443/udp"
     volumes:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       # Serve rendered HTML straight from the shared day11 volume,

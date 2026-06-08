@@ -17,8 +17,16 @@
 #      and these routes 404 (the rest of the site still proxies fine).
 #   2. Reverse-proxy everything else to the daemon's web UI on :8080 —
 #      the dashboard, snapshot pages, /job/ log viewer, diff pages, etc.
+#
+# TLS: naming a real domain (not :80) turns on Caddy's automatic HTTPS —
+# it provisions and renews a Let's Encrypt cert over ACME and redirects
+# plain HTTP to HTTPS. Needs ports 80 + 443 reachable from the internet
+# and a DNS record for the domain pointing here. Certs/account key persist
+# on the /data volume so restarts don't re-request. Override the domain
+# with an env var if you like: replace the site address with {$SITE_ADDRESS}
+# and set it in compose.
 
-:80 {
+dill.caelum.ci.dev {
 	# gzip-compress the static .css/.js/.json odoc emits (and HTML).
 	encode gzip
 
