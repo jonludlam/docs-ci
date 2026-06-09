@@ -200,7 +200,10 @@ let generate ~packages_dir ~run_id ~previous:_ =
       new_packages := pkg_str :: !new_packages
   ) pkg_dirs;
   let sum totals = List.fold_left (fun acc (_, n) -> acc + n) 0 totals in
-  Log.info (fun f -> f "generated status (run %s): %d pkg-dirs scanned, \
+  (* App level: always shown regardless of --verbosity, so build
+     progress (and whether generate_status runs incrementally or only
+     at completion) is visible in the daemon log by default. *)
+  Log.app (fun f -> f "generated status (run %s): %d pkg-dirs scanned, \
     blessed=%d non_blessed=%d changes=%d new=%d"
     run_id (List.length pkg_dirs) (sum !blessed_totals)
     (sum !non_blessed_totals) (List.length !changes)
