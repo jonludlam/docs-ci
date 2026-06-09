@@ -214,18 +214,14 @@ let compile_package ~sw env benv ~os_dir ~odoc_tool ~blessed
         false
 
 let link_package ~sw env benv ~os_dir ~html_dir
-    ~odoc_tool ~build_hash_blessed
-    ~driver_tool ~build_to_doc_hash
-    ~doc_dep_hashes ~compiler_s
-    ~build_hash ~compile_hash ~dag_hash (node : build) =
-  let blessed = match Hashtbl.find_opt build_hash_blessed node.hash with
-    | Some true -> true | _ -> false in
+    ~odoc_tool ~blessed ~driver_tool ~doc_deps ~(compile_node : build)
+    ~dag_hash (node : build) =
   let build_layer = Build.dir ~os_dir node in
   (* No no-doc short-circuit: see [compile_package]. The compile node
      has already produced a real layer for non-documentable packages
      thanks to [Prep]'s stub [index.mld], so [Layer.is_ok] below
      succeeds and we proceed into the link container. *)
-  let compile_layer = Layer.of_hash ~os_dir compile_hash in
+  let compile_layer = Layer.of_hash ~os_dir compile_node.hash in
   if not (Layer.is_ok env compile_layer) then false
   else
   match odoc_tool with
@@ -234,51 +230,13 @@ let link_package ~sw env benv ~os_dir ~html_dir
     let config : Doc_build.doc_config =
       { driver_tool; odoc_tool; os_dir; blessed } in
     let compile_layer = Layer.dir compile_layer in
-    (* Walk doc_dep_hashes transitively (cycle-safe via seen set);
-       mounts every reachable dep's compile/doc-all layer. Matches
-       plan_doc_dag's link-node dep set. Dedup by doc_hash because
-       the transitive closure can reach the same package via
-       multiple paths — overlayfs rejects conflicting lowerdir
-       entries with ELOOP. See {!page-doc_dep_graphs} §3.
-
-       Returns [Error] (and the link is then NOT dispatched) when any
-       reachable dep's doc layer is missing or failed — same
-       reasoning as {!find_dep_compile_layers}. Earlier code skipped
-       those silently. *)
-    let dep_compile_layers_result =
-      let seen = Hashtbl.create 16 in
-      let rec walk bh =
-        if not (Hashtbl.mem seen bh) then begin
-          Hashtbl.replace seen bh ();
-          let direct =
-            match Hashtbl.find_opt doc_dep_hashes (bh, compiler_s) with
-            | Some bhs -> bhs | None -> [] in
-          List.iter walk direct
-        end
-      in
-      let direct =
-        match Hashtbl.find_opt doc_dep_hashes (build_hash, compiler_s) with
-        | Some bhs -> bhs | None -> [] in
-      List.iter walk direct;
-      let by_doc_hash = Hashtbl.create 16 in
-      let missing = ref [] in
-      Hashtbl.iter (fun dep_bh () ->
-        (* Key by the dep's [Build.t.hash] directly — same uniqueness
-           argument as in {!find_dep_compile_layers}. *)
-        match Hashtbl.find_opt build_to_doc_hash dep_bh with
-        | None -> ()
-        | Some doc_hash ->
-          if not (Hashtbl.mem by_doc_hash doc_hash) then
-            match inspect_layer env ~os_dir doc_hash with
-            | Layer_ok d -> Hashtbl.replace by_doc_hash doc_hash d
-            | (Layer_missing | Layer_failed) as s ->
-              missing := (dep_bh, doc_hash, s) :: !missing
-      ) seen;
-      if !missing = [] then
-        Ok (Hashtbl.fold (fun _ d acc -> d :: acc) by_doc_hash [])
-      else Error !missing
-    in
-    match dep_compile_layers_result, find_build_deps_layers env ~os_dir node with
+    (* The link's mount set is exactly the layers of its [doc_deps] —
+       the transitive doc-dep closure built in the link pass — so
+       [find_dep_compile_layers] over them gives the same set (deduped
+       by layer hash). Returns [Error] (link NOT dispatched) if any is
+       missing/failed. *)
+    match find_dep_compile_layers env ~os_dir doc_deps,
+          find_build_deps_layers env ~os_dir node with
     | Error missing, _ ->
       Fmt.pr "  %s: link NOT DISPATCHED — %a@."
         (OpamPackage.to_string node.pkg)
@@ -873,19 +831,14 @@ let make_dispatch benv ~os_dir ~html_dir ~(plan : internal_plan)
            ~driver_tool:plan.driver_tool
            ~doc_deps:dn.doc_deps ~dag_hash:node.hash build_node
        | Link ->
-         (* Phase 2 migrates link_package onto [dn]; for now keep the
-            table-based call, sourcing what we can from [dn]. *)
-         let compile_hash = match dn.compile_layer with
-           | Some l -> l.hash | None -> "" in
-         let compiler_s = match dn.compiler with
-           | Some c -> OpamPackage.to_string c | None -> "" in
-         link_package ~sw env benv ~os_dir ~html_dir ~odoc_tool:dn.odoc_tool
-           ~build_hash_blessed:plan.build_hash_blessed
-           ~driver_tool:plan.driver_tool
-           ~build_to_doc_hash:plan.build_to_doc_hash
-           ~doc_dep_hashes:plan.doc_dep_hashes ~compiler_s
-           ~build_hash:build_node.hash ~compile_hash
-           ~dag_hash:node.hash build_node
+         (match dn.compile_layer with
+          | None -> true  (* a link always has a compile sibling *)
+          | Some compile_node ->
+            link_package ~sw env benv ~os_dir ~html_dir
+              ~odoc_tool:dn.odoc_tool ~blessed:dn.blessed
+              ~driver_tool:plan.driver_tool
+              ~doc_deps:dn.doc_deps ~compile_node
+              ~dag_hash:node.hash build_node)
        | Build | Tool -> dispatch_other ~sw env node)
 
 (* ── Public API ──────────────────────────────────────────────── *)
