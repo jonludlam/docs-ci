@@ -199,6 +199,12 @@ let generate ~packages_dir ~run_id ~previous:_ =
     if (not has_old_entries) && all_entries <> [] then
       new_packages := pkg_str :: !new_packages
   ) pkg_dirs;
+  let sum totals = List.fold_left (fun acc (_, n) -> acc + n) 0 totals in
+  Log.info (fun f -> f "generated status (run %s): %d pkg-dirs scanned, \
+    blessed=%d non_blessed=%d changes=%d new=%d"
+    run_id (List.length pkg_dirs) (sum !blessed_totals)
+    (sum !non_blessed_totals) (List.length !changes)
+    (List.length !new_packages));
   {
     generated = iso8601_now ();
     run_id;
@@ -224,9 +230,10 @@ let read ~dir =
   let path = status_path dir in
   if not (Sys.file_exists path) then begin
     (* Normal early in a fresh run: status.json isn't written until the
-       first [generate_status] pass. Logged at debug so the absence is
-       still traceable without spamming the default log. *)
-    Log.debug (fun f -> f "status.json not present yet: %s" path);
+       first [generate_status] pass completes. At info so "page shows
+       no totals" is explainable from the log (file genuinely absent vs.
+       a parse failure below). *)
+    Log.info (fun f -> f "status.json not present yet: %s" path);
     None
   end
   else
