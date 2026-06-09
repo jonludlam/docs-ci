@@ -1,3 +1,7 @@
+let src = Logs.Src.create "day11.universe_manifest"
+    ~doc:"Per-snapshot universe manifests read/write"
+module Log = (val Logs.src_log src)
+
 type t = {
   hash : string;
   packages : string list;
@@ -40,7 +44,10 @@ let read_index ~snapshot_dir =
        let json = Yojson.Safe.from_string s in
        let open Yojson.Safe.Util in
        json |> member "universes" |> to_list |> List.map to_string
-     with _ -> [])
+     with exn ->
+       Log.warn (fun f -> f "universes/index.json parse failed (%s): %s"
+         (Fpath.to_string (index_path snapshot_dir)) (Printexc.to_string exn));
+       [])
 
 let read_manifest ~snapshot_dir ~hash =
   match Bos.OS.File.read (manifest_path snapshot_dir hash) with
@@ -53,4 +60,8 @@ let read_manifest ~snapshot_dir ~hash =
        let packages =
          json |> member "packages" |> to_list |> List.map to_string in
        Some { hash; packages }
-     with _ -> None)
+     with exn ->
+       Log.warn (fun f -> f "universes/%s.json parse failed (%s): %s"
+         hash (Fpath.to_string (manifest_path snapshot_dir hash))
+         (Printexc.to_string exn));
+       None)
