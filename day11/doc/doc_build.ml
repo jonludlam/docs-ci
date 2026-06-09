@@ -129,143 +129,82 @@ let debug_inspect_image =
    ls -d /home/opam/prep/universes/*/*/*/ 2>/dev/null | sort; \
    echo '=== END DEBUG ==='; "
 
-let compile ~sw env benv ~(config : doc_config) ~build_layer
-    ~build_deps_layers ~dep_compile_layers ~hash pkg =
+(* Shared body of the three doc phases (compile / link / doc-all). They
+   differ only in the voodoo [actions], the [Doc_meta] phase + recorded
+   deps, whether an HTML output dir is bind-mounted, the layer dirs to
+   stack, and the error label. Returns the built node on success; the
+   wrappers map that to the layer dir (compile/doc-all) or unit (link).
+   Layer dirs are stacked build-deps first (build-time tooling) then
+   compile layers (.odoc files) — order matters for overlayfs. *)
+let run_doc_phase ~sw env benv ~(config : doc_config) ~build_layer
+    ~actions ~phase ~meta_deps ~html_dir ~build_dirs ~label ~hash pkg
+    : (Build.t, string) result =
   match prepare ~config ~build_layer pkg with
   | None -> Error "no documentable libraries"
   | Some (universe, mounts, prep_dir) ->
-    let blessed = config.blessed in
+    (* The HTML output dir is a bind-mount source; runc won't start if it
+       doesn't exist, so ensure it (top-level callers usually do too). *)
+    let mounts = match html_dir with
+      | None -> mounts
+      | Some dir ->
+        ignore (Bos.OS.Dir.create ~path:true dir);
+        mounts @ [ Day11_container.Mount.bind_rw
+                     ~src:(Fpath.to_string dir) Odoc_store.container_html ]
+    in
     let cmd =
       "export PATH=/home/opam/doc-tools/bin:$PATH && eval $(opam env) && " ^
       debug_inspect_image ^
       Command.odoc_driver_voodoo ~pkg ~universe
-        ~blessed ~actions:"compile-only" ~odoc_bin ~odoc_md_bin in
-    let compile_node : Build.t =
-      { hash; pkg; deps = [];
-        universe = Day11_solution.Universe.dummy } in
-    let dep_hashes = List.map (fun d ->
-      Fpath.basename d) dep_compile_layers in
+        ~blessed:config.blessed ~actions ~odoc_bin ~odoc_md_bin in
+    let node : Build.t =
+      { hash; pkg; deps = []; universe = Day11_solution.Universe.dummy } in
     let on_extract ~layer_dir ~success:_ =
-      let dm : Doc_meta.t = {
-        package = OpamPackage.to_string pkg;
-        phase = Doc_meta.Compile;
-        deps = dep_hashes;
-      } in
+      let dm : Doc_meta.t =
+        { package = OpamPackage.to_string pkg; phase; deps = meta_deps } in
       ignore (Doc_meta.save layer_dir dm)
     in
-    (* Stack build deps first (for build-time tooling) then compile
-       layers (for .odoc files). Order matters for overlayfs.
-       [ocamlobjinfo] is mounted directly via {!make_tool_mounts}
-       so leaf packages (notably the compiler when self-documenting)
-       still find it. *)
-    let all_dirs = build_deps_layers @ dep_compile_layers in
     let result =
       match Day11_opam_build.Build_layer.build ~sw env benv
-              ~opam_repositories:[] ~mounts ~build_dirs:all_dirs
+              ~opam_repositories:[] ~mounts ~build_dirs
               ~prep_upper:(doc_prep_upper ~sw env ~uid:benv.uid ~gid:benv.gid)
-              ~on_extract compile_node
+              ~on_extract node
               ~strategy:{ cmd; cleanup = doc_cleanup } () with
-      | Day11_opam_build.Types.Success _bl ->
-        Ok (Day11_opam_layer.Build.dir ~os_dir:config.os_dir compile_node)
+      | Day11_opam_build.Types.Success _ -> Ok node
       | _ ->
-        Error (Printf.sprintf "compile failed for %s"
+        Error (Printf.sprintf "%s failed for %s" label
           (OpamPackage.to_string pkg))
     in
     ignore (Day11_sys.Sudo.rm_rf ~sw env prep_dir);
     result
+
+let compile ~sw env benv ~(config : doc_config) ~build_layer
+    ~build_deps_layers ~dep_compile_layers ~hash pkg =
+  run_doc_phase ~sw env benv ~config ~build_layer
+    ~actions:"compile-only" ~phase:Doc_meta.Compile
+    ~meta_deps:(List.map Fpath.basename dep_compile_layers)
+    ~html_dir:None
+    ~build_dirs:(build_deps_layers @ dep_compile_layers)
+    ~label:"compile" ~hash pkg
+  |> Result.map (fun node ->
+       Day11_opam_layer.Build.dir ~os_dir:config.os_dir node)
 
 let link ~sw env benv ~(config : doc_config) ~build_layer
     ~build_deps_layers ~compile_layer ~dep_compile_layers ~html_dir ~hash pkg =
-  match prepare ~config ~build_layer pkg with
-  | None -> Error "no documentable libraries"
-  | Some (universe, mounts, prep_dir) ->
-    let blessed = config.blessed in
-    let all_compile_dirs =
-      build_deps_layers @ (compile_layer :: dep_compile_layers) in
-    (* The HTML output dir is the bind-mount source; runc fails to start
-       if it doesn't exist. Top-level callers create it, but ensure it
-       here too so a link node never fails on a missing output dir. *)
-    ignore (Bos.OS.Dir.create ~path:true html_dir);
-    let html_mount = Day11_container.Mount.bind_rw
-      ~src:(Fpath.to_string html_dir)
-      Odoc_store.container_html in
-    let cmd =
-      "export PATH=/home/opam/doc-tools/bin:$PATH && eval $(opam env) && " ^
-      debug_inspect_image ^
-      Command.odoc_driver_voodoo ~pkg ~universe
-        ~blessed ~actions:"link-and-gen" ~odoc_bin ~odoc_md_bin in
-    let link_node : Build.t =
-      { hash; pkg; deps = [];
-        universe = Day11_solution.Universe.dummy } in
-    let on_extract ~layer_dir ~success:_ =
-      let dm : Doc_meta.t = {
-        package = OpamPackage.to_string pkg;
-        phase = Doc_meta.Link;
-        deps = [];
-      } in
-      ignore (Doc_meta.save layer_dir dm)
-    in
-    let result =
-      match Day11_opam_build.Build_layer.build ~sw env benv
-              ~opam_repositories:[]
-              ~mounts:(mounts @ [html_mount])
-              ~build_dirs:all_compile_dirs
-              ~prep_upper:(doc_prep_upper ~sw env ~uid:benv.uid ~gid:benv.gid)
-              ~on_extract link_node
-              ~strategy:{ cmd; cleanup = doc_cleanup } () with
-      | Day11_opam_build.Types.Success _ -> Ok ()
-      | _ ->
-        Error (Printf.sprintf "link failed for %s"
-          (OpamPackage.to_string pkg))
-    in
-    ignore (Day11_sys.Sudo.rm_rf ~sw env prep_dir);
-    result
+  run_doc_phase ~sw env benv ~config ~build_layer
+    ~actions:"link-and-gen" ~phase:Doc_meta.Link ~meta_deps:[]
+    ~html_dir:(Some html_dir)
+    ~build_dirs:(build_deps_layers @ (compile_layer :: dep_compile_layers))
+    ~label:"link" ~hash pkg
+  |> Result.map ignore
 
 let doc_all ~sw env benv ~(config : doc_config) ~build_layer
     ~build_deps_layers ~dep_compile_layers ~html_dir ~hash pkg =
-  match prepare ~config ~build_layer pkg with
-  | None -> Error "no documentable libraries"
-  | Some (universe, mounts, prep_dir) ->
-    let blessed = config.blessed in
-    (* Ensure the HTML output dir exists — it's the bind-mount source
-       and runc fails to start without it (see [link]). *)
-    ignore (Bos.OS.Dir.create ~path:true html_dir);
-    let html_mount = Day11_container.Mount.bind_rw
-      ~src:(Fpath.to_string html_dir)
-      Odoc_store.container_html in
-    let cmd =
-      "export PATH=/home/opam/doc-tools/bin:$PATH && eval $(opam env) && " ^
-      debug_inspect_image ^
-      Command.odoc_driver_voodoo ~pkg ~universe
-        ~blessed ~actions:"all" ~odoc_bin ~odoc_md_bin in
-    let doc_node : Build.t =
-      { hash; pkg; deps = [];
-        universe = Day11_solution.Universe.dummy } in
-    let dep_hashes = List.map (fun d ->
-      Fpath.basename d) dep_compile_layers in
-    let on_extract ~layer_dir ~success:_ =
-      let dm : Doc_meta.t = {
-        package = OpamPackage.to_string pkg;
-        phase = Doc_meta.Doc_all;
-        deps = dep_hashes;
-      } in
-      ignore (Doc_meta.save layer_dir dm)
-    in
-    let all_dirs = build_deps_layers @ dep_compile_layers in
-    let result =
-      match Day11_opam_build.Build_layer.build ~sw env benv
-              ~opam_repositories:[]
-              ~mounts:(mounts @ [html_mount])
-              ~build_dirs:all_dirs
-              ~prep_upper:(doc_prep_upper ~sw env ~uid:benv.uid ~gid:benv.gid)
-              ~on_extract doc_node
-              ~strategy:{ cmd; cleanup = doc_cleanup } () with
-      | Day11_opam_build.Types.Success _bl ->
-        Ok (Day11_opam_layer.Build.dir ~os_dir:config.os_dir doc_node)
-      | _ ->
-        Error (Printf.sprintf "doc-all failed for %s"
-          (OpamPackage.to_string pkg))
-    in
-    ignore (Day11_sys.Sudo.rm_rf ~sw env prep_dir);
-    result
+  run_doc_phase ~sw env benv ~config ~build_layer
+    ~actions:"all" ~phase:Doc_meta.Doc_all
+    ~meta_deps:(List.map Fpath.basename dep_compile_layers)
+    ~html_dir:(Some html_dir)
+    ~build_dirs:(build_deps_layers @ dep_compile_layers)
+    ~label:"doc-all" ~hash pkg
+  |> Result.map (fun node ->
+       Day11_opam_layer.Build.dir ~os_dir:config.os_dir node)
 
