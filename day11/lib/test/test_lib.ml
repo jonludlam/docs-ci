@@ -73,9 +73,9 @@ let test_universe_manifest_missing () = with_tmp_dir @@ fun dir ->
 let test_dag_marshal_universe_roundtrip () = with_tmp_dir @@ fun dir ->
   let entries = [
     { Dag_marshal.hash = "h1"; pkg = OpamPackage.of_string "astring.0.8.5";
-      kind = Build; deps = []; universe = "u-aaa" };
+      kind = Build; deps = []; universe = "u-aaa"; blessed = false };
     { Dag_marshal.hash = "h2"; pkg = OpamPackage.of_string "fmt.0.9.0";
-      kind = Compile; deps = [ "h1" ]; universe = "u-bbb" };
+      kind = Compile; deps = [ "h1" ]; universe = "u-bbb"; blessed = true };
   ] in
   (match Dag_marshal.write ~snapshot_dir:dir entries with
    | Ok () -> () | Error (`Msg m) -> Alcotest.fail m);
