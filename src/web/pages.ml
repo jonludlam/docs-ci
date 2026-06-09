@@ -382,19 +382,32 @@ let snapshot_detail ~ctx name key =
         Some (Printf.sprintf "/profiles/%s/snapshots" name), "Snapshots";
         None, key;
       ] in
-      let repos =
+      let repos_json =
         match Bos.OS.File.read Fpath.(snapshot_dir / "repos.json") with
-        | Error _ -> []
-        | Ok s ->
-          try
-            let json = Yojson.Safe.from_string s in
-            let open Yojson.Safe.Util in
-            json |> member "repos" |> to_list
-            |> List.map (fun r ->
-              let path = r |> member "path" |> to_string in
-              let commit = r |> member "commit" |> to_string in
-              (path, commit))
-          with _ -> []
+        | Error _ -> None
+        | Ok s -> (try Some (Yojson.Safe.from_string s) with _ -> None)
+      in
+      let repos = match repos_json with
+        | None -> []
+        | Some json ->
+          (try
+             let open Yojson.Safe.Util in
+             json |> member "repos" |> to_list
+             |> List.map (fun r ->
+               let path = r |> member "path" |> to_string in
+               let commit = r |> member "commit" |> to_string in
+               (path, commit))
+           with _ -> [])
+      in
+      (* The ISO-8601 timestamp of when this snapshot was first seen,
+         written by [Snapshot.save]. Surfaced in the page header. *)
+      let created = match repos_json with
+        | None -> None
+        | Some json ->
+          (match Yojson.Safe.Util.member "created" json with
+           | `String s -> Some s
+           | _ -> None
+           | exception _ -> None)
       in
       (* Read the live HEAD of [path] (a local git repo). Returns
          [None] if [path] isn't a git repo or the read fails — non-git
@@ -413,6 +426,20 @@ let snapshot_detail ~ctx name key =
           match line with
           | Some s when String.length s = 40 -> Some s
           | _ -> None
+        with _ -> None
+      in
+      (* Subject line of [commit] in the git repo at [path]. Returns
+         [None] if the commit isn't present locally or the read fails. *)
+      let read_commit_subject path commit =
+        let cmd = Printf.sprintf
+          "git -C %s log -1 --format=%%s %s 2>/dev/null"
+          (Filename.quote path) (Filename.quote commit) in
+        try
+          let ic = Unix.open_process_in cmd in
+          let line = try Some (String.trim (input_line ic))
+                     with End_of_file -> None in
+          let _ = Unix.close_process_in ic in
+          (match line with Some "" -> None | l -> l)
         with _ -> None
       in
       (* For a github-pin-overlay path of the form ".../overlays/<n>/repo",
@@ -441,20 +468,27 @@ let snapshot_detail ~ctx name key =
               | Some h -> span ~a:[ a_class [ "warn" ] ]
                   [ Templates.sha_span h ]
             in
+            let msg_cell = match read_commit_subject p c with
+              | Some m -> td [ txt m ]
+              | None -> td [ em [ txt "—" ] ]
+            in
             let upstream_rows = match upstream_head_for p with
               | None -> []
               | Some (upath, uhead) ->
                 [ tr [ td [ code [ txt (upath ^ " (upstream)") ] ];
                        td [ em [ txt "—" ] ];
+                       td [ em [ txt "—" ] ];
                        td [ Templates.sha_span uhead ] ] ]
             in
             tr [ td [ code [ txt p ] ];
                  td [ Templates.sha_span c ];
+                 msg_cell;
                  td [ live_cell ] ] :: upstream_rows
           in
           table ~a:[ a_class [ "data" ] ]
             ~thead:(thead [ tr [ th [ txt "Repo" ];
                                  th [ txt "Snapshot" ];
+                                 th [ txt "Message" ];
                                  th [ txt "Latest" ] ] ])
             (List.concat_map row repos)
       in
@@ -830,18 +864,29 @@ let snapshot_detail ~ctx name key =
                                     th [ txt "Status" ] ] ])
                (List.map pkg_row pkgs)))
       in
+      let created_line = match created with
+        | None -> []
+        | Some ts ->
+          [ p ~a:[ a_class [ "crumbs" ] ] [ em [ txt ("Created " ^ ts) ] ] ]
+      in
+      (* The DAG-state overview and per-cascade breakdown are verbose
+         and secondary to failures; tuck them behind a fold. *)
+      let cascade_fold = match overview_section @ cascade_section with
+        | [] -> []
+        | content ->
+          [ details (summary [ txt "Cascade / DAG-state details" ]) content ]
+      in
       let r = timing "respond_ok+render" (fun () ->
         Context.respond_ok web_ctx ([
           Templates.style_block; crumbs;
           h2 [ txt (name ^ " / "); Templates.sha_span key ];
-        ] @ diff_link
-          @ overview_section
+        ] @ created_line
+          @ diff_link
+          @ [ h3 [ txt "Repos at this snapshot" ]; repos_table ]
           @ [ h3 [ txt "Failures" ] ]
           @ failures_section
-          @ cascade_section
+          @ cascade_fold
           @ [
-          h3 [ txt "Repos at this snapshot" ];
-          repos_table;
           h3 [ txt "Status totals" ];
         ] @ totals @ [
           h3 [ txt (Printf.sprintf "Packages (%d)" pkg_count) ];
@@ -1552,10 +1597,30 @@ let package_version ~ctx name pkg ver =
           | Some err -> [ code [ txt err ] ]
           | None -> []
         in
+        (* Doc entries carry category "doc_success"/"doc_failure"; build
+           entries are "success" or a build_* failure category. *)
+        let is_doc_entry =
+          String.length e.category >= 3
+          && String.sub e.category 0 3 = "doc"
+        in
+        (* The Status column already says "success" — don't echo it here. *)
+        let category_cell =
+          if e.status = "success" then em [ txt "—" ]
+          else txt e.category
+        in
+        (* "Blessed" is a doc/universe concept; only meaningful for
+           doc entries. *)
+        let blessed_cell =
+          if is_doc_entry then
+            if e.blessed then span ~a:[ a_class [ "ok" ] ] [ txt "blessed" ]
+            else txt "—"
+          else em [ txt "—" ]
+        in
         tr [ td [ txt e.ts ];
              td [ txt e.run ];
              td [ Templates.status_span e.status ];
-             td [ txt e.category ];
+             td [ category_cell ];
+             td [ blessed_cell ];
              td [ hash_cell ];
              td error_cell ]
       ) entries in
@@ -1567,6 +1632,7 @@ let package_version ~ctx name pkg ver =
                                    th [ txt "Run" ];
                                    th [ txt "Status" ];
                                    th [ txt "Category" ];
+                                   th [ txt "Blessed" ];
                                    th [ txt "Hash" ];
                                    th [ txt "Error" ] ] ])
               history_rows ]
