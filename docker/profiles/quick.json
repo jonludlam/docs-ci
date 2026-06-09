@@ -128,6 +128,7 @@
         "ocaml_intrinsics_kernel",
         "ocaml_openapi_generator",
         "ocaml_plugin",
+        "odoc",
         "of_json",
         "ordinal_abbreviation",
         "pam",
