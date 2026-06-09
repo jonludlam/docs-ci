@@ -21,9 +21,14 @@ type entry = {
   deps : string list;
   (** Hashes of direct dependencies, in plan-construction order. *)
   universe : string;
-  (** Universe hash of this node's doc-dep closure (see
-      {!Day11_solution.Universe}). ["" ] for tool nodes and for
-      dag.json files written before this field was added. *)
+  (** Real output universe — [Day11_doc.Command.compute_universe_hash] of
+      the node's build-layer hash, i.e. the [u/<universe>/...] path the
+      docs land in (matches the [--parent-id u/...] in the build log).
+      ["" ] for tool nodes and for dag.json files predating this field. *)
+  blessed : bool;
+  (** Whether this node's universe is the blessed one for its package
+      (per-universe, not the package-level [is_blessed]). [false] for
+      dag.json files predating this field. *)
 }
 
 val path : Fpath.t -> Fpath.t

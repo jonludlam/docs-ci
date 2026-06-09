@@ -6,9 +6,14 @@ type entry = {
   kind : kind;
   deps : string list;
   universe : string;
-  (** Universe hash of this node's doc-dep closure. ["" ] for nodes
-      with no meaningful universe (tools) or old dag.json files
-      written before this field existed. *)
+  (** Real output universe of this node — [compute_universe_hash] of the
+      node's build-layer hash, i.e. the [u/<universe>/...] path the docs
+      land in. ["" ] for nodes with no meaningful universe (tools) or
+      old dag.json files written before this field existed. *)
+  blessed : bool;
+  (** Whether this node's universe is the blessed one for its package
+      (the per-universe blessing decision, not package-level). [false]
+      for nodes from dag.json files predating this field. *)
 }
 
 let kind_to_string = function
@@ -35,6 +40,7 @@ let entry_to_json (e : entry) : Yojson.Safe.t =
     "kind", `String (kind_to_string e.kind);
     "deps", `List (List.map (fun h -> `String h) e.deps);
     "universe", `String e.universe;
+    "blessed", `Bool e.blessed;
   ]
 
 let to_json entries : Yojson.Safe.t =
@@ -67,7 +73,13 @@ let entry_of_json (j : Yojson.Safe.t) =
       | _ -> ""
       | exception _ -> ""
     in
-    Ok { hash; pkg; kind; deps; universe }
+    let blessed =
+      match member "blessed" j with
+      | `Bool b -> b
+      | _ -> false
+      | exception _ -> false
+    in
+    Ok { hash; pkg; kind; deps; universe; blessed }
   with exn ->
     Rresult.R.error_msgf "Dag_marshal.entry_of_json: %s"
       (Printexc.to_string exn)
