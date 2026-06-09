@@ -9,9 +9,9 @@
 #      (html-live -> epoch-<hash>/html), and the daemon links to
 #      [/profiles/<NAME>/docs/p/<pkg>/<ver>/...].
 #      The .day11 volume is mounted read-only at /srv (Caddy keeps its
-#      own state on /data, so we can't reuse that path), and the per-arch
-#      cache root is a subdir — so live docs are under
-#      [/srv/cache/debian-bookworm-x86_64/html-<profile>/html-live/].
+#      own state on /data, so we can't reuse that path). Rendered HTML
+#      is arch-independent, so it lives under a flat per-profile dir —
+#      live docs are under [/srv/cache/html/<profile>/html-live/].
 #      The html-live symlink is *relative* (epoch-<hash>/html), so it
 #      resolves within /srv. Until the first promote, html-live is absent
 #      and these routes 404 (the rest of the site still proxies fine).
@@ -40,7 +40,7 @@ dill.caelum.ci.dev {
 	# Capture 1 is the profile, capture 2 the path within its html tree.
 	@docs path_regexp docs ^/profiles/([^/]+)/docs/(.*)$
 	handle @docs {
-		root * /srv/cache/debian-bookworm-x86_64/html-{re.docs.1}/html-live
+		root * /srv/cache/html/{re.docs.1}/html-live
 		rewrite * /{re.docs.2}
 		# odoc trees carry an index.html in every directory; serve it for
 		# bare-directory requests. Missing files 404 (file_server default).
