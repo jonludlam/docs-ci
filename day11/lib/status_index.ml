@@ -1,3 +1,7 @@
+let src = Logs.Src.create "day11.status_index"
+    ~doc:"Status index (status.json) read/write"
+module Log = (val Logs.src_log src)
+
 type change = {
   package : string;
   build_hash : string;
@@ -218,10 +222,24 @@ let write ~dir t =
 
 let read ~dir =
   let path = status_path dir in
-  if not (Sys.file_exists path) then None
-  else begin
-    try
-      let json = Yojson.Safe.from_file path in
-      of_json json
-    with _ -> None
+  if not (Sys.file_exists path) then begin
+    (* Normal early in a fresh run: status.json isn't written until the
+       first [generate_status] pass. Logged at debug so the absence is
+       still traceable without spamming the default log. *)
+    Log.debug (fun f -> f "status.json not present yet: %s" path);
+    None
   end
+  else
+    match Yojson.Safe.from_file path with
+    | exception exn ->
+      Log.warn (fun f -> f "status.json unreadable / invalid JSON (%s): %s"
+        path (Printexc.to_string exn));
+      None
+    | json ->
+      match of_json json with
+      | Some _ as r -> r
+      | None ->
+        Log.warn (fun f -> f "status.json parsed as JSON but failed \
+          structural validation (missing or non-string generated/run_id?): \
+          %s" path);
+        None
