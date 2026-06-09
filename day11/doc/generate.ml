@@ -4,6 +4,29 @@ module Installed_files = Day11_opam_layer.Installed_files
 
 type build = Build.t
 
+type node_kind = Build | Tool | Compile | Doc_all | Link
+
+(** One doc-side node (compile, doc-all or link) with everything dispatch
+    and reporting need on the node itself rather than in parallel tables.
+    [build_node] is the build layer it documents; [layer] is this node's
+    own layer (its hash is [layer.hash]); [doc_deps] are the dependency
+    doc nodes it mounts — for compile/doc-all these come from the build-dep
+    recursion, for link from the solution's (wider) doc-deps. [universe] is
+    the real [u/<hash>] output universe (matches the build log). *)
+type doc_node = {
+  build_node : build;
+  kind : node_kind;
+  layer : build;
+  doc_deps : doc_node list;
+  compile_layer : build option;
+  (** For a [Link] node, its own compile node's layer (the thing being
+      linked); [None] for compile/doc-all nodes. *)
+  compiler : OpamPackage.t option;
+  odoc_tool : Tool.t option;
+  universe : string;
+  blessed : bool;
+}
+
 (* Names of opam wrappers tagged [flags: compiler] — what the
    solver pins as "the OCaml version" and what [odoc_tools] is
    keyed on. Distinct from {!Doc_build.is_compiler_pkg}, which
@@ -95,33 +118,26 @@ let pp_dep_status ppf = function
     this from the link phase}: link needs the [doc_deps] closure
     (which adds [{post}] and [x-extra-doc-deps]); see
     {!page-doc_dep_graphs} §3. *)
-let find_dep_compile_layers env ~os_dir ~build_to_doc_hash
-    (node : build) =
-  let seen = Hashtbl.create 16 in
-  List.iter (collect_transitive_deps seen) node.deps;
+(* Inspect every dep doc layer in the transitive closure over [doc_deps]
+   (a DAG — compile/link split breaks doc-dep cycles), deduped by layer
+   hash. Replaces the old [build_to_doc_hash] + transitive build-dep walk:
+   [doc_deps] are already the documentable deps (with pass-through), so
+   flattening them yields the same layer set without any table. *)
+let find_dep_compile_layers env ~os_dir (doc_deps : doc_node list) =
+  let seen : (string, doc_node) Hashtbl.t = Hashtbl.create 16 in
+  let rec collect (dn : doc_node) =
+    if not (Hashtbl.mem seen dn.layer.hash) then begin
+      Hashtbl.replace seen dn.layer.hash dn;
+      List.iter collect dn.doc_deps
+    end
+  in
+  List.iter collect doc_deps;
   let dirs = ref [] and missing = ref [] in
-  Hashtbl.iter (fun _hash (dep : Build.t) ->
-    (* Key by the dep's Build.t hash directly. Each [Build.t] record
-       is uniquely identified by its hash, and [make_doc_node]'s
-       cache + [doc_all_nodes]/[compile_nodes] storage are keyed
-       the same way — so this lookup returns exactly the doc-all
-       that [collect_dep_docs] wired into the OCurrent component
-       graph for this [Build.t]. The previous [(universe, pkg)]
-       keying caused mismatches when two [Build.t] records (e.g.
-       a package's BUILD variant from the profile solve and TOOL
-       variant from the doc-driver solve) shared the [(universe,
-       pkg)] triple but had different hashes — [Hashtbl.replace]
-       during table construction kept only the last entry (always
-       the TOOL one, since [tool_nodes] iterates last), so dispatch
-       chased the wrong doc-all and reported it missing while
-       OCurrent was waiting on the BUILD-chain doc-all. *)
-    match Hashtbl.find_opt build_to_doc_hash dep.hash with
-    | None -> ()  (* dep has no doc layer — legitimately skipped *)
-    | Some doc_hash ->
-      match inspect_layer env ~os_dir doc_hash with
-      | Layer_ok d -> dirs := d :: !dirs
-      | (Layer_missing | Layer_failed) as s ->
-        missing := (dep.hash, doc_hash, s) :: !missing
+  Hashtbl.iter (fun _ (dn : doc_node) ->
+    match inspect_layer env ~os_dir dn.layer.hash with
+    | Layer_ok d -> dirs := d :: !dirs
+    | (Layer_missing | Layer_failed) as s ->
+      missing := (dn.build_node.hash, dn.layer.hash, s) :: !missing
   ) seen;
   if !missing = [] then Ok !dirs else Error !missing
 
@@ -158,10 +174,8 @@ let pp_missing_deps ~kind ppf missing =
       pp_dep_status status
   ) missing
 
-let compile_package ~sw env benv ~os_dir ~odoc_tool ~build_hash_blessed
-    ~driver_tool ~build_to_doc_hash ~dag_hash (node : build) =
-  let blessed = match Hashtbl.find_opt build_hash_blessed node.hash with
-    | Some true -> true | _ -> false in
+let compile_package ~sw env benv ~os_dir ~odoc_tool ~blessed
+    ~driver_tool ~doc_deps ~dag_hash (node : build) =
   match odoc_tool with
   | None -> false
   | Some (odoc_tool : Tool.t) ->
@@ -177,7 +191,7 @@ let compile_package ~sw env benv ~os_dir ~odoc_tool ~build_hash_blessed
        one extra container per non-documentable package per profile,
        which is small and amortised by day11's cache. *)
     match
-      find_dep_compile_layers env ~os_dir ~build_to_doc_hash node,
+      find_dep_compile_layers env ~os_dir doc_deps,
       find_build_deps_layers env ~os_dir node
     with
     | Error missing, _ ->
@@ -286,10 +300,8 @@ let link_package ~sw env benv ~os_dir ~html_dir
         false
 
 let doc_all_package ~sw env benv ~os_dir ~html_dir
-    ~odoc_tool ~build_hash_blessed
-    ~driver_tool ~build_to_doc_hash ~dag_hash (node : build) =
-  let blessed = match Hashtbl.find_opt build_hash_blessed node.hash with
-    | Some true -> true | _ -> false in
+    ~odoc_tool ~blessed
+    ~driver_tool ~doc_deps ~dag_hash (node : build) =
   match odoc_tool with
   | None -> false
   | Some (odoc_tool : Tool.t) ->
@@ -298,7 +310,7 @@ let doc_all_package ~sw env benv ~os_dir ~html_dir
     let build_layer = Build.dir ~os_dir node in
     (* No no-doc short-circuit: see [compile_package]. *)
     match
-      find_dep_compile_layers env ~os_dir ~build_to_doc_hash node,
+      find_dep_compile_layers env ~os_dir doc_deps,
       find_build_deps_layers env ~os_dir node
     with
     | Error missing, _ ->
@@ -322,26 +334,6 @@ let doc_all_package ~sw env benv ~os_dir ~html_dir
         false
 
 (* ── Internal: shared DAG construction ───────────────────────── *)
-
-type node_kind = Build | Tool | Compile | Doc_all | Link
-
-(** One doc-side node (compile, doc-all or link) with everything dispatch
-    and reporting need on the node itself rather than in parallel tables.
-    [build_node] is the build layer it documents; [layer] is this node's
-    own layer (its hash is [layer.hash]); [doc_deps] are the dependency
-    doc nodes it mounts — for compile/doc-all these come from the build-dep
-    recursion, for link from the solution's (wider) doc-deps. [universe] is
-    the real [u/<hash>] output universe (matches the build log). *)
-type doc_node = {
-  build_node : build;
-  kind : node_kind;
-  layer : build;
-  doc_deps : doc_node list;
-  compiler : OpamPackage.t option;
-  odoc_tool : Tool.t option;
-  universe : string;
-  blessed : bool;
-}
 
 (** Internal plan tables produced by [build_internal_plan].
     Contains all immutable mappings needed for dispatch.
@@ -702,6 +694,7 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
              else Hashtbl.replace doc_all_nodes n.hash layer);
             let dn = {
               build_node = n; kind; layer; doc_deps;
+              compile_layer = None;
               compiler = Hashtbl.find_opt node_compiler n.hash;
               odoc_tool = Some odoc_tool;
               universe =
@@ -775,7 +768,8 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
             universe = Day11_solution.Universe.dummy } in
         link_nodes_list := link_layer :: !link_nodes_list;
         Some { build_node = dn.build_node; kind = Link; layer = link_layer;
-               doc_deps = dep_doc_nodes; compiler = dn.compiler;
+               doc_deps = dep_doc_nodes; compile_layer = Some dn.layer;
+               compiler = dn.compiler;
                odoc_tool = dn.odoc_tool; universe = dn.universe;
                blessed = dn.blessed }
       | _ -> None
@@ -848,81 +842,51 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
     can bound the lifetime of spawned subprocesses to each build. *)
 let make_dispatch benv ~os_dir ~html_dir ~(plan : internal_plan)
     ~tool_source_dirs ~mounts ~build_one =
-  (* Diagnostic: log when a doc-side node dispatches with [odoc_tool =
-     None]. Should never happen — the doc node was only emitted by
-     [plan_doc_dag] when [find_odoc_tool_for_hash] returned [Some] —
-     so a [None] at dispatch time means the plan that created the
-     OCurrent component disagrees with the plan against which it's
-     being dispatched. Captures: dag_hash, build_hash, package, what
-     compiler [find_compiler_for_hash] reports (the suspected
-     missing entry in [node_compiler]). *)
-  let log_silent_none kind ~dag_hash ~build_hash (node : build) =
-    let compiler = match plan.find_compiler_for_hash build_hash with
-      | Some c -> OpamPackage.to_string c | None -> "<none>" in
-    Printf.eprintf
-      "[%s odoc_tool=None] %s build_hash=%s dag_hash=%s compiler=%s\n%!"
-      kind (OpamPackage.to_string node.pkg)
-      (String.sub build_hash 0 (min 12 (String.length build_hash)))
-      (String.sub dag_hash 0 (min 12 (String.length dag_hash)))
-      compiler
+  (* A node not in [meta] is a build or tool node: build it from a
+     mounted source dir if it's a tool, else via the generic builder. *)
+  let dispatch_other ~sw env (node : build) =
+    let name = OpamPackage.name node.pkg in
+    match OpamPackage.Name.Map.find_opt name tool_source_dirs with
+    | Some dir ->
+      let src_mount =
+        Day11_container.Mount.bind_ro ~src:dir "/home/opam/src" in
+      let strategy = Day11_opam_build.Tools.source_dir_strategy node.pkg in
+      (match Day11_opam_build.Build_layer.build ~sw env benv
+               ~opam_repositories:[] ~mounts:(src_mount :: mounts) node
+               ~strategy () with
+       | Day11_opam_build.Types.Success _ -> true | _ -> false)
+    | None -> ignore (sw, env); build_one node
   in
   fun ~sw env (node : build) ->
-    if Hashtbl.mem plan.compile_set node.hash then begin
-      match Hashtbl.find_opt plan.compile_to_build node.hash with
-      | None -> true
-      | Some build_hash ->
-        let build_node = Hashtbl.find plan.build_by_hash build_hash in
-        let odoc_tool = plan.find_odoc_tool_for_hash build_hash in
-        if odoc_tool = None then
-          log_silent_none "compile" ~dag_hash:node.hash ~build_hash build_node;
-        compile_package ~sw env benv ~os_dir ~odoc_tool
-          ~build_hash_blessed:plan.build_hash_blessed
-          ~driver_tool:plan.driver_tool
-          ~build_to_doc_hash:plan.build_to_doc_hash
-          ~dag_hash:node.hash build_node
-    end else if Hashtbl.mem plan.doc_all_set node.hash then begin
-      match Hashtbl.find_opt plan.doc_all_to_build node.hash with
-      | None -> true
-      | Some build_hash ->
-        let build_node = Hashtbl.find plan.build_by_hash build_hash in
-        let odoc_tool = plan.find_odoc_tool_for_hash build_hash in
-        if odoc_tool = None then
-          log_silent_none "doc-all" ~dag_hash:node.hash ~build_hash build_node;
-        doc_all_package ~sw env benv ~os_dir ~html_dir ~odoc_tool
-          ~build_hash_blessed:plan.build_hash_blessed
-          ~driver_tool:plan.driver_tool
-          ~build_to_doc_hash:plan.build_to_doc_hash
-          ~dag_hash:node.hash build_node
-    end else if Hashtbl.mem plan.link_set node.hash then begin
-      match Hashtbl.find_opt plan.link_to_build node.hash with
-      | None -> true
-      | Some build_hash ->
-        let build_node = Hashtbl.find plan.build_by_hash build_hash in
-        let compile_hash = match Hashtbl.find_opt plan.build_to_doc_hash build_hash with
-          | Some h -> h | None -> "" in
-        let odoc_tool = plan.find_odoc_tool_for_hash build_hash in
-        let compiler_s = match plan.find_compiler_for_hash build_hash with
-          | Some c -> OpamPackage.to_string c | None -> "" in
-        if odoc_tool = None then
-          log_silent_none "link" ~dag_hash:node.hash ~build_hash build_node;
-        link_package ~sw env benv ~os_dir ~html_dir ~odoc_tool
-          ~build_hash_blessed:plan.build_hash_blessed
-          ~driver_tool:plan.driver_tool
-          ~build_to_doc_hash:plan.build_to_doc_hash
-          ~doc_dep_hashes:plan.doc_dep_hashes ~compiler_s
-          ~build_hash ~compile_hash
-          ~dag_hash:node.hash build_node
-    end else begin
-      let name = OpamPackage.name node.pkg in
-      match OpamPackage.Name.Map.find_opt name tool_source_dirs with
-      | Some dir ->
-        let src_mount = Day11_container.Mount.bind_ro ~src:dir "/home/opam/src" in
-        let strategy = Day11_opam_build.Tools.source_dir_strategy node.pkg in
-        (match Day11_opam_build.Build_layer.build ~sw env benv
-                 ~opam_repositories:[] ~mounts:(src_mount :: mounts) node ~strategy () with
-         | Day11_opam_build.Types.Success _ -> true | _ -> false)
-      | None -> ignore (sw, env); build_one node
-    end
+    match Hashtbl.find_opt plan.meta node.hash with
+    | None -> dispatch_other ~sw env node
+    | Some dn ->
+      let build_node = dn.build_node in
+      (match dn.kind with
+       | Compile ->
+         compile_package ~sw env benv ~os_dir ~odoc_tool:dn.odoc_tool
+           ~blessed:dn.blessed ~driver_tool:plan.driver_tool
+           ~doc_deps:dn.doc_deps ~dag_hash:node.hash build_node
+       | Doc_all ->
+         doc_all_package ~sw env benv ~os_dir ~html_dir
+           ~odoc_tool:dn.odoc_tool ~blessed:dn.blessed
+           ~driver_tool:plan.driver_tool
+           ~doc_deps:dn.doc_deps ~dag_hash:node.hash build_node
+       | Link ->
+         (* Phase 2 migrates link_package onto [dn]; for now keep the
+            table-based call, sourcing what we can from [dn]. *)
+         let compile_hash = match dn.compile_layer with
+           | Some l -> l.hash | None -> "" in
+         let compiler_s = match dn.compiler with
+           | Some c -> OpamPackage.to_string c | None -> "" in
+         link_package ~sw env benv ~os_dir ~html_dir ~odoc_tool:dn.odoc_tool
+           ~build_hash_blessed:plan.build_hash_blessed
+           ~driver_tool:plan.driver_tool
+           ~build_to_doc_hash:plan.build_to_doc_hash
+           ~doc_dep_hashes:plan.doc_dep_hashes ~compiler_s
+           ~build_hash:build_node.hash ~compile_hash
+           ~dag_hash:node.hash build_node
+       | Build | Tool -> dispatch_other ~sw env node)
 
 (* ── Public API ──────────────────────────────────────────────── *)
 
