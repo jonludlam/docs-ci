@@ -43,6 +43,60 @@ let test_matches_any () =
   Alcotest.(check bool) "no match"
     false (Classify.matches_any [ "foo"; "bar" ] "contains baz")
 
+(* ── Universe_manifest tests ─────────────────────────────────────── *)
+
+let test_universe_manifest_roundtrip () = with_tmp_dir @@ fun dir ->
+  let universes = [
+    ("u-aaa", [ "astring.0.8.5"; "fmt.0.9.0" ]);
+    ("u-bbb", [ "dune.3.0" ]);
+  ] in
+  (match Universe_manifest.write_all ~snapshot_dir:dir universes with
+   | Ok () -> () | Error (`Msg m) -> Alcotest.fail m);
+  let idx =
+    List.sort compare (Universe_manifest.read_index ~snapshot_dir:dir) in
+  Alcotest.(check (list string)) "index" [ "u-aaa"; "u-bbb" ] idx;
+  (match Universe_manifest.read_manifest ~snapshot_dir:dir ~hash:"u-aaa" with
+   | Some m ->
+     Alcotest.(check string) "hash" "u-aaa" m.hash;
+     Alcotest.(check (list string)) "packages"
+       [ "astring.0.8.5"; "fmt.0.9.0" ] m.packages
+   | None -> Alcotest.fail "manifest u-aaa missing")
+
+let test_universe_manifest_missing () = with_tmp_dir @@ fun dir ->
+  Alcotest.(check (list string)) "empty index" []
+    (Universe_manifest.read_index ~snapshot_dir:dir);
+  Alcotest.(check bool) "missing manifest" true
+    (Universe_manifest.read_manifest ~snapshot_dir:dir ~hash:"nope" = None)
+
+(* ── Dag_marshal universe tests ──────────────────────────────────── *)
+
+let test_dag_marshal_universe_roundtrip () = with_tmp_dir @@ fun dir ->
+  let entries = [
+    { Dag_marshal.hash = "h1"; pkg = OpamPackage.of_string "astring.0.8.5";
+      kind = Build; deps = []; universe = "u-aaa" };
+    { Dag_marshal.hash = "h2"; pkg = OpamPackage.of_string "fmt.0.9.0";
+      kind = Compile; deps = [ "h1" ]; universe = "u-bbb" };
+  ] in
+  (match Dag_marshal.write ~snapshot_dir:dir entries with
+   | Ok () -> () | Error (`Msg m) -> Alcotest.fail m);
+  (match Dag_marshal.read ~snapshot_dir:dir with
+   | Ok [ e1; e2 ] ->
+     Alcotest.(check string) "u1" "u-aaa" e1.universe;
+     Alcotest.(check string) "u2" "u-bbb" e2.universe
+   | Ok _ -> Alcotest.fail "wrong entry count"
+   | Error (`Msg m) -> Alcotest.fail m)
+
+let test_dag_marshal_universe_default () = with_tmp_dir @@ fun dir ->
+  (* A dag.json written before the universe field existed reads as "". *)
+  let json =
+    {|{"version":1,"nodes":[{"hash":"h1","pkg":"astring.0.8.5",|}
+    ^ {|"kind":"build","deps":[]}]}|} in
+  (match Bos.OS.File.write (Dag_marshal.path dir) json with
+   | Ok () -> () | Error (`Msg m) -> Alcotest.fail m);
+  (match Dag_marshal.read ~snapshot_dir:dir with
+   | Ok [ e ] -> Alcotest.(check string) "default universe" "" e.universe
+   | _ -> Alcotest.fail "read failed")
+
 (* ── History tests ───────────────────────────────────────────────── *)
 
 let make_entry ?(status = "success") ?(category = "build") pkg =
@@ -360,6 +414,19 @@ let () =
           Alcotest.test_case "extract compiler missing" `Quick
             test_extract_compiler_missing;
           Alcotest.test_case "matches_any" `Quick test_matches_any;
+        ] );
+      ( "Universe_manifest",
+        [
+          Alcotest.test_case "roundtrip" `Quick
+            test_universe_manifest_roundtrip;
+          Alcotest.test_case "missing" `Quick test_universe_manifest_missing;
+        ] );
+      ( "Dag_marshal",
+        [
+          Alcotest.test_case "universe roundtrip" `Quick
+            test_dag_marshal_universe_roundtrip;
+          Alcotest.test_case "universe default" `Quick
+            test_dag_marshal_universe_default;
         ] );
       ( "History",
         [

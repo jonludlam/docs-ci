@@ -932,7 +932,8 @@ let dag_entries_of_plan (plan : internal_plan) :
   List.map (fun (n : build) ->
     { Day11_lib.Dag_marshal.hash = n.hash; pkg = n.pkg;
       kind = convert_kind (kind_of n);
-      deps = List.map (fun (d : build) -> d.hash) n.deps }
+      deps = List.map (fun (d : build) -> d.hash) n.deps;
+      universe = Day11_solution.Universe.to_string n.universe }
   ) plan.all_nodes
 
 let write_dag_if_requested ~snapshot_dir plan =
@@ -944,6 +945,40 @@ let write_dag_if_requested ~snapshot_dir plan =
     | Ok () -> ()
     | Error (`Msg m) ->
       Printf.eprintf "  warning: failed to write dag.json: %s\n%!" m
+
+(* Map every distinct universe (doc-dep closure) seen across [solutions]
+   to its package set. Mirrors the universe identity in [Dag.build_dag]:
+   universe = of_deps(transitive doc-deps of a package), and the
+   "packages in" that universe are exactly that closure set. *)
+let universe_manifests_of_solutions solutions =
+  let tbl : (string, string list) Hashtbl.t = Hashtbl.create 1024 in
+  List.iter (fun (_target, (r : Day11_solution.Solve_result.t)) ->
+    let trans_doc = Day11_solution.Deps.transitive_deps r.doc_deps in
+    OpamPackage.Map.iter (fun _pkg deps ->
+      let u = Day11_solution.Universe.to_string
+        (Day11_solution.Universe.of_deps deps) in
+      if not (Hashtbl.mem tbl u) then
+        let pkgs =
+          OpamPackage.Set.elements deps
+          |> List.map OpamPackage.to_string
+          |> List.sort compare in
+        Hashtbl.replace tbl u pkgs
+    ) trans_doc
+  ) solutions;
+  Hashtbl.fold (fun h pkgs acc -> (h, pkgs) :: acc) tbl []
+
+let write_universes_if_requested ~snapshot_dir solutions =
+  match snapshot_dir with
+  | None -> ()
+  | Some dir ->
+    let universes = universe_manifests_of_solutions solutions in
+    match Day11_lib.Universe_manifest.write_all ~snapshot_dir:dir
+            universes with
+    | Ok () ->
+      Printf.printf "  Wrote %d universe manifests\n%!"
+        (List.length universes)
+    | Error (`Msg m) ->
+      Printf.eprintf "  warning: failed to write universes: %s\n%!" m
 
 let run ~sw env benv ~np ~os_dir ~html_dir ~(driver_tool : Tool.t)
     ~odoc_tools ~tool_source_dirs ~mounts
@@ -957,6 +992,7 @@ let run ~sw env benv ~np ~os_dir ~html_dir ~(driver_tool : Tool.t)
   Printf.printf "  Doc DAG: %d total nodes\n%!" (List.length plan.all_nodes);
   Day11_lib.Run_log.write_dag_structure run_log plan.all_nodes;
   write_dag_if_requested ~snapshot_dir plan;
+  write_universes_if_requested ~snapshot_dir solutions;
   let doc_count = Atomic.make 0 in
   let node_priority (n : build) =
     if Hashtbl.mem plan.link_set n.hash then 3
@@ -1248,6 +1284,7 @@ let plan_doc_dag ~sw env (ctx : Day11_batch.Profile_ctx.t)
     success
   in
   write_dag_if_requested ~snapshot_dir plan;
+  write_universes_if_requested ~snapshot_dir solutions;
   Some { all_nodes = plan.all_nodes;
          node_kind = kind_of;
          build_one = dispatch_with_callbacks;

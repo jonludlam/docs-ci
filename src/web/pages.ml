@@ -1568,9 +1568,24 @@ let package_version ~ctx name pkg ver =
          (build/compile/doc_all/link) layer hash, keeping the most
          recent. Without dedup the table grows linearly with retries
          and snapshots, mostly repeats. *)
+      (* Pair each history entry with the universe of its build_hash,
+         read from that snapshot's dag.json (the only place the
+         build_hash → universe mapping is persisted). *)
       let entries = List.concat_map (fun snap ->
         let pdir = Fpath.(snap / "packages") in
-        Day11_lib.History.read_latest ~packages_dir:pdir ~pkg_str
+        let universe_of =
+          match Day11_lib.Dag_marshal.read ~snapshot_dir:snap with
+          | Error _ -> fun _ -> None
+          | Ok dag ->
+            let h = Hashtbl.create (List.length dag) in
+            List.iter (fun (e : Day11_lib.Dag_marshal.entry) ->
+              if e.universe <> "" then Hashtbl.replace h e.hash e.universe)
+              dag;
+            fun bh -> Hashtbl.find_opt h bh
+        in
+        List.map (fun (e : Day11_lib.History.entry) ->
+          (e, universe_of e.build_hash))
+          (Day11_lib.History.read_latest ~packages_dir:pdir ~pkg_str)
       ) snaps in
       let crumbs = Templates.breadcrumbs [
         Some "/profiles", "Profiles";
@@ -1579,7 +1594,8 @@ let package_version ~ctx name pkg ver =
           "package: " ^ pkg;
         None, ver;
       ] in
-      let history_rows = List.map (fun (e : Day11_lib.History.entry) ->
+      let history_rows = List.map (fun ((e : Day11_lib.History.entry),
+                                        universe_opt) ->
         (* Prefer linking to the OCurrent job page (gives a Rebuild
            button and structured log) when we can find it; fall back
            to the raw layer.log file when the cache no longer has the
@@ -1616,10 +1632,20 @@ let package_version ~ctx name pkg ver =
             else txt "—"
           else em [ txt "—" ]
         in
+        (* Universe is a build-node concept; link it to the universe
+           page. Doc entries get the Blessed column instead. *)
+        let universe_cell =
+          match (if is_doc_entry then None else universe_opt) with
+          | Some u when u <> "" ->
+            a ~a:[ a_href (Printf.sprintf "/profiles/%s/u/%s" name u) ]
+              [ Templates.sha_span u ]
+          | _ -> em [ txt "—" ]
+        in
         tr [ td [ txt e.ts ];
              td [ txt e.run ];
              td [ Templates.status_span e.status ];
              td [ category_cell ];
+             td [ universe_cell ];
              td [ blessed_cell ];
              td [ hash_cell ];
              td error_cell ]
@@ -1632,6 +1658,7 @@ let package_version ~ctx name pkg ver =
                                    th [ txt "Run" ];
                                    th [ txt "Status" ];
                                    th [ txt "Category" ];
+                                   th [ txt "Universe" ];
                                    th [ txt "Blessed" ];
                                    th [ txt "Hash" ];
                                    th [ txt "Error" ] ] ])
@@ -1657,6 +1684,56 @@ let package_version ~ctx name pkg ver =
         docs_para;
         h3 [ txt "History" ];
       ] @ history_block)
+  end
+
+(* ── /profiles/<name>/u/<hash> ────────────────────────────────── *)
+
+(** The package versions making up a universe (a doc-dep closure).
+    The manifest is written per-snapshot, but a universe hash is
+    content-addressed, so any snapshot recording it gives the same
+    set — we take the first match scanning newest-first. *)
+let universe_page ~ctx name hash =
+  object
+    inherit Resource.t
+    val! can_get = `Viewer
+    method! private get web_ctx =
+      let snaps = list_snapshots_newest_first ctx name in
+      let manifest = List.find_map (fun snap ->
+        Day11_lib.Universe_manifest.read_manifest ~snapshot_dir:snap ~hash)
+        snaps
+      in
+      let crumbs = Templates.breadcrumbs [
+        Some "/profiles", "Profiles";
+        Some ("/profiles/" ^ name), name;
+        None, "universe";
+      ] in
+      let body = match manifest with
+        | None ->
+          [ p [ em [ txt "No manifest found for this universe in any \
+                          snapshot. It may pre-date universe metadata, \
+                          or the snapshots have been pruned." ] ] ]
+        | Some m ->
+          let row pv =
+            let cell = match String.index_opt pv '.' with
+              | None -> td [ txt pv ]
+              | Some i ->
+                let n = String.sub pv 0 i in
+                let v = String.sub pv (i + 1) (String.length pv - i - 1) in
+                td [ a ~a:[ a_href (Printf.sprintf
+                                      "/profiles/%s/p/%s/%s" name n v) ]
+                       [ txt pv ] ]
+            in
+            tr [ cell ]
+          in
+          [ p [ txt (Printf.sprintf "%d packages in this universe."
+                       (List.length m.packages)) ];
+            table ~a:[ a_class [ "data" ] ]
+              ~thead:(thead [ tr [ th [ txt "Package" ] ] ])
+              (List.map row m.packages) ]
+      in
+      Context.respond_ok web_ctx
+        ([ Templates.style_block; crumbs;
+           h2 [ txt "Universe "; Templates.sha_span hash ] ] @ body)
   end
 
 (* ── /profiles/<name>/builds/<hash>/log ──────────────────────── *)
