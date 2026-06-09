@@ -1637,11 +1637,10 @@ let package_version ~ctx name pkg ver =
           String.length e.category >= 3
           && String.sub e.category 0 3 = "doc"
         in
-        (* The Status column already says "success" — don't echo it here. *)
-        let category_cell =
-          if e.status = "success" then em [ txt "—" ]
-          else txt e.category
-        in
+        (* Category is just the node kind: "docs" or "build". The
+           outcome is already in the Status column and any failure
+           detail in Error. *)
+        let category_cell = txt (if is_doc_entry then "docs" else "build") in
         (* "Blessed" is a doc/universe concept; only meaningful for
            doc entries. *)
         let blessed_cell =
