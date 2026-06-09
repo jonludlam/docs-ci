@@ -1591,18 +1591,19 @@ let package_version ~ctx name pkg ver =
          build_hash → universe mapping is persisted). *)
       let entries = List.concat_map (fun snap ->
         let pdir = Fpath.(snap / "packages") in
-        let universe_of =
+        (* dag.json carries the real per-node universe + blessing, keyed
+           by the build_hash of each history entry. *)
+        let dag_info_of =
           match Day11_lib.Dag_marshal.read ~snapshot_dir:snap with
           | Error _ -> fun _ -> None
           | Ok dag ->
             let h = Hashtbl.create (List.length dag) in
             List.iter (fun (e : Day11_lib.Dag_marshal.entry) ->
-              if e.universe <> "" then Hashtbl.replace h e.hash e.universe)
-              dag;
+              Hashtbl.replace h e.hash (e.universe, e.blessed)) dag;
             fun bh -> Hashtbl.find_opt h bh
         in
         List.map (fun (e : Day11_lib.History.entry) ->
-          (e, universe_of e.build_hash))
+          (e, dag_info_of e.build_hash))
           (Day11_lib.History.read_latest ~packages_dir:pdir ~pkg_str)
       ) snaps in
       let crumbs = Templates.breadcrumbs [
@@ -1613,7 +1614,7 @@ let package_version ~ctx name pkg ver =
         None, ver;
       ] in
       let history_rows = List.map (fun ((e : Day11_lib.History.entry),
-                                        universe_opt) ->
+                                        dag_info) ->
         (* Prefer linking to the OCurrent job page (gives a Rebuild
            button and structured log) when we can find it; fall back
            to the raw layer.log file when the cache no longer has the
@@ -1641,22 +1642,24 @@ let package_version ~ctx name pkg ver =
            outcome is already in the Status column and any failure
            detail in Error. *)
         let category_cell = txt (if is_doc_entry then "docs" else "build") in
-        (* "Blessed" is a doc/universe concept; only meaningful for
-           doc entries. *)
-        let blessed_cell =
-          if is_doc_entry then
-            if e.blessed then span ~a:[ a_class [ "ok" ] ] [ txt "blessed" ]
-            else txt "—"
+        let universe, blessed = match dag_info with
+          | Some (u, b) -> u, b
+          | None -> "", false
+        in
+        (* Universe applies to both build and doc nodes — link it to the
+           universe page. From dag.json (the real u/<hash> universe). *)
+        let universe_cell =
+          if universe <> "" then
+            a ~a:[ a_href (Printf.sprintf "/profiles/%s/u/%s" name universe) ]
+              [ Templates.sha_span universe ]
           else em [ txt "—" ]
         in
-        (* Universe is a build-node concept; link it to the universe
-           page. Doc entries get the Blessed column instead. *)
-        let universe_cell =
-          match (if is_doc_entry then None else universe_opt) with
-          | Some u when u <> "" ->
-            a ~a:[ a_href (Printf.sprintf "/profiles/%s/u/%s" name u) ]
-              [ Templates.sha_span u ]
-          | _ -> em [ txt "—" ]
+        (* "Blessed" is a per-universe doc concept; show it on doc rows. *)
+        let blessed_cell =
+          if is_doc_entry then
+            if blessed then span ~a:[ a_class [ "ok" ] ] [ txt "blessed" ]
+            else txt "—"
+          else em [ txt "—" ]
         in
         tr [ td [ txt e.ts ];
              td [ txt e.run ];

@@ -980,32 +980,40 @@ let write_dag_if_requested ~snapshot_dir plan =
     | Error (`Msg m) ->
       Printf.eprintf "  warning: failed to write dag.json: %s\n%!" m
 
-(* Map every distinct universe (doc-dep closure) seen across [solutions]
-   to its package set. Mirrors the universe identity in [Dag.build_dag]:
-   universe = of_deps(transitive doc-deps of a package), and the
-   "packages in" that universe are exactly that closure set. *)
-let universe_manifests_of_solutions solutions =
+(* Map each real output universe ([u/<hash>]) to the package versions it
+   contains — the doc-dep closure of the build it documents. Derived from
+   the doc_node graph: the package set is the transitive closure over
+   [doc_deps] (acyclic). Per universe we use the doc-all/link node (the
+   final artifact, whose [doc_deps] is the full doc-deps set), not the
+   intermediate compile node. *)
+let universe_manifests_of_plan (plan : internal_plan) =
+  let pkg_cache : (string, string list) Hashtbl.t = Hashtbl.create 4096 in
+  let rec pkgs_of (dn : doc_node) : string list =
+    match Hashtbl.find_opt pkg_cache dn.layer.hash with
+    | Some p -> p
+    | None ->
+      let self = OpamPackage.to_string dn.build_node.pkg in
+      let all =
+        List.sort_uniq compare
+          (self :: List.concat_map pkgs_of dn.doc_deps) in
+      Hashtbl.replace pkg_cache dn.layer.hash all;
+      all
+  in
   let tbl : (string, string list) Hashtbl.t = Hashtbl.create 1024 in
-  List.iter (fun (_target, (r : Day11_solution.Solve_result.t)) ->
-    let trans_doc = Day11_solution.Deps.transitive_deps r.doc_deps in
-    OpamPackage.Map.iter (fun _pkg deps ->
-      let u = Day11_solution.Universe.to_string
-        (Day11_solution.Universe.of_deps deps) in
-      if not (Hashtbl.mem tbl u) then
-        let pkgs =
-          OpamPackage.Set.elements deps
-          |> List.map OpamPackage.to_string
-          |> List.sort compare in
-        Hashtbl.replace tbl u pkgs
-    ) trans_doc
-  ) solutions;
+  Hashtbl.iter (fun _ (dn : doc_node) ->
+    match dn.kind with
+    | Doc_all | Link ->
+      if dn.universe <> "" && not (Hashtbl.mem tbl dn.universe) then
+        Hashtbl.replace tbl dn.universe (pkgs_of dn)
+    | _ -> ()
+  ) plan.meta;
   Hashtbl.fold (fun h pkgs acc -> (h, pkgs) :: acc) tbl []
 
-let write_universes_if_requested ~snapshot_dir solutions =
+let write_universes_if_requested ~snapshot_dir plan =
   match snapshot_dir with
   | None -> ()
   | Some dir ->
-    let universes = universe_manifests_of_solutions solutions in
+    let universes = universe_manifests_of_plan plan in
     match Day11_lib.Universe_manifest.write_all ~snapshot_dir:dir
             universes with
     | Ok () ->
@@ -1026,7 +1034,7 @@ let run ~sw env benv ~np ~os_dir ~html_dir ~(driver_tool : Tool.t)
   Printf.printf "  Doc DAG: %d total nodes\n%!" (List.length plan.all_nodes);
   Day11_lib.Run_log.write_dag_structure run_log plan.all_nodes;
   write_dag_if_requested ~snapshot_dir plan;
-  write_universes_if_requested ~snapshot_dir solutions;
+  write_universes_if_requested ~snapshot_dir plan;
   let doc_count = Atomic.make 0 in
   let node_priority (n : build) =
     if Hashtbl.mem plan.link_set n.hash then 3
@@ -1318,7 +1326,7 @@ let plan_doc_dag ~sw env (ctx : Day11_batch.Profile_ctx.t)
     success
   in
   write_dag_if_requested ~snapshot_dir plan;
-  write_universes_if_requested ~snapshot_dir solutions;
+  write_universes_if_requested ~snapshot_dir plan;
   Some { all_nodes = plan.all_nodes;
          node_kind = kind_of;
          build_one = dispatch_with_callbacks;
