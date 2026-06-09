@@ -293,40 +293,14 @@ let doc_all_package ~sw env benv ~os_dir ~html_dir
 
 (* ── Internal: shared DAG construction ───────────────────────── *)
 
-(** Internal plan tables produced by [build_internal_plan].
-    Contains all immutable mappings needed for dispatch.
-
-    [meta] is the consolidated per-node view ({!doc_node}); the
-    individual tables below are being migrated onto it. *)
+(** What [build_internal_plan] produces: the full node list, the
+    consolidated per-node view ([meta], keyed by layer hash — the single
+    source of truth for kind / universe / blessing / deps), and the doc
+    driver tool. All the per-node dispatch facts that used to live in
+    parallel hashtables now live on the {!doc_node} in [meta]. *)
 type internal_plan = {
   all_nodes : build list;
   meta : (string, doc_node) Hashtbl.t;
-  build_by_hash : (string, build) Hashtbl.t;
-  build_to_doc_hash : (string, string) Hashtbl.t;
-    (** Keyed by [build_hash] — each [Build.t] record has a unique
-        hash, so this map uniquely identifies the compile/doc-all
-        node produced by [make_doc_node] for that [Build.t]. Used
-        by [find_dep_compile_layers] and [link_package]'s walk.
-        Consistent with [collect_dep_docs] (which also keys by
-        [Build.t.hash]), so dispatch's dep-layer check sees the
-        same doc-all that OCurrent's component graph wired. *)
-  build_hash_blessed : (string, bool) Hashtbl.t;
-  doc_dep_hashes : (string * string, string list) Hashtbl.t;
-    (** Keyed by [(build_hash, compiler_str)] — compiler scope keeps
-        the link walk from collapsing across solver universes. See
-        the "doc_dep_hashes" comment in [build_internal_plan]. *)
-  compile_to_build : (string, string) Hashtbl.t;
-  doc_all_to_build : (string, string) Hashtbl.t;
-  link_to_build : (string, string) Hashtbl.t;
-  compile_set : (string, unit) Hashtbl.t;
-  doc_all_set : (string, unit) Hashtbl.t;
-  link_set : (string, unit) Hashtbl.t;
-  tool_node_set : (string, unit) Hashtbl.t;
-  find_odoc_tool_for_hash : string -> Tool.t option;
-  find_compiler_for_hash : string -> OpamPackage.t option;
-    (** Look up the compiler associated with a given build hash. Used
-        by [link_package] to find the compiler-scoped key into
-        [doc_dep_hashes]. *)
   driver_tool : Tool.t;
 }
 
@@ -753,47 +727,34 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
       else (Hashtbl.replace seen n.hash (); true)
     ) (nodes @ tool_nodes @ compile_list @ doc_all_list @ !link_nodes_list)
   in
-  (* Build immutable dispatch tables *)
-  let build_to_doc_hash : (string, string) Hashtbl.t = Hashtbl.create 64 in
-  Hashtbl.iter (fun build_hash (cn : build) ->
-    Hashtbl.replace build_to_doc_hash build_hash cn.hash) compile_nodes;
-  Hashtbl.iter (fun build_hash (dn : build) ->
-    Hashtbl.replace build_to_doc_hash build_hash dn.hash) doc_all_nodes;
-  let compile_to_build : (string, string) Hashtbl.t = Hashtbl.create 64 in
-  Hashtbl.iter (fun build_hash (cn : build) ->
-    Hashtbl.replace compile_to_build cn.hash build_hash) compile_nodes;
-  let doc_all_to_build : (string, string) Hashtbl.t = Hashtbl.create 64 in
-  Hashtbl.iter (fun build_hash (dn : build) ->
-    Hashtbl.replace doc_all_to_build dn.hash build_hash) doc_all_nodes;
-  let link_to_build : (string, string) Hashtbl.t = Hashtbl.create 64 in
-  List.iter (fun (ln : build) ->
-    match ln.deps with
-    | build_node :: _ when Hashtbl.mem build_by_hash build_node.hash ->
-      Hashtbl.replace link_to_build ln.hash build_node.hash
-    | _ -> ()
-  ) !link_nodes_list;
-  let compile_set = Hashtbl.create 64 in
-  List.iter (fun (cn : build) -> Hashtbl.replace compile_set cn.hash ()) compile_list;
-  let doc_all_set = Hashtbl.create 64 in
-  List.iter (fun (dn : build) -> Hashtbl.replace doc_all_set dn.hash ()) doc_all_list;
-  let link_set = Hashtbl.create 64 in
-  List.iter (fun (ln : build) -> Hashtbl.replace link_set ln.hash ()) !link_nodes_list;
-  let tool_node_set = Hashtbl.create 64 in
-  List.iter (fun (n : build) ->
-    Hashtbl.replace tool_node_set n.hash ()) tool_nodes;
-  let find_compiler_for_hash bh = Hashtbl.find_opt node_compiler bh in
-  (* Consolidated per-node view, keyed by the doc node's own layer hash. *)
+  (* Consolidated per-node view, keyed by each node's own layer hash —
+     the single source of truth for kind / universe / blessing / deps.
+     Covers every node in [all_nodes]: the doc nodes from above, plus the
+     plain build and tool nodes (which have no doc deps). *)
   let meta : (string, doc_node) Hashtbl.t =
-    Hashtbl.create
-      (List.length compile_docall_doc_nodes + List.length link_doc_nodes) in
+    Hashtbl.create (List.length all_doc_nodes) in
   List.iter (fun (dn : doc_node) -> Hashtbl.replace meta dn.layer.hash dn)
     (compile_docall_doc_nodes @ link_doc_nodes);
-  { all_nodes = all_doc_nodes; meta; build_by_hash;
-    build_to_doc_hash;
-    build_hash_blessed; doc_dep_hashes;
-    compile_to_build; doc_all_to_build; link_to_build;
-    compile_set; doc_all_set; link_set; tool_node_set;
-    find_odoc_tool_for_hash; find_compiler_for_hash; driver_tool }
+  let add_plain kind (n : build) =
+    if not (Hashtbl.mem meta n.hash) then
+      Hashtbl.replace meta n.hash {
+        build_node = n; kind; layer = n; doc_deps = [];
+        compile_layer = None;
+        compiler = Hashtbl.find_opt node_compiler n.hash;
+        odoc_tool = None;
+        universe =
+          (match kind with
+           | Tool -> ""
+           | _ ->
+             Command.compute_universe_hash [ Day11_layer.Dir.name n.hash ]);
+        blessed =
+          (match Hashtbl.find_opt build_hash_blessed n.hash with
+           | Some b -> b | None -> false);
+      }
+  in
+  List.iter (add_plain Build) nodes;
+  List.iter (add_plain Tool) tool_nodes;
+  { all_nodes = all_doc_nodes; meta; driver_tool }
 
 (** Build a dispatch function from the plan tables.
     The returned closure takes a fresh [~sw] per call so the caller
@@ -852,34 +813,23 @@ type doc_plan = {
 }
 
 let node_kind_of_plan (plan : internal_plan) (n : build) =
-  if Hashtbl.mem plan.link_set n.hash then Link
-  else if Hashtbl.mem plan.compile_set n.hash then Compile
-  else if Hashtbl.mem plan.doc_all_set n.hash then Doc_all
-  else if Hashtbl.mem plan.tool_node_set n.hash then Tool
-  else Build
+  match Hashtbl.find_opt plan.meta n.hash with
+  | Some dn -> dn.kind
+  | None -> Build
 
 let dag_entries_of_plan (plan : internal_plan) :
     Day11_lib.Dag_marshal.entry list =
-  let kind_of = node_kind_of_plan plan in
   let convert_kind : node_kind -> Day11_lib.Dag_marshal.kind = function
     | Build -> Build | Tool -> Tool | Compile -> Compile
     | Doc_all -> Doc_all | Link -> Link
   in
   List.map (fun (n : build) ->
-    let kind = kind_of n in
-    (* compile/doc-all/link nodes carry their real universe + blessing in
-       [meta]; build nodes derive the same universe from their layer hash
-       (tools have none). *)
-    let universe, blessed =
+    (* Every node — build, tool, and doc — is in [meta] with its kind,
+       real universe and per-universe blessing. *)
+    let kind, universe, blessed =
       match Hashtbl.find_opt plan.meta n.hash with
-      | Some dn -> dn.universe, dn.blessed
-      | None ->
-        (match kind with
-         | Tool -> "", false
-         | _ ->
-           Command.compute_universe_hash [ Day11_layer.Dir.name n.hash ],
-           (match Hashtbl.find_opt plan.build_hash_blessed n.hash with
-            | Some b -> b | None -> false))
+      | Some dn -> dn.kind, dn.universe, dn.blessed
+      | None -> Build, "", false
     in
     { Day11_lib.Dag_marshal.hash = n.hash; pkg = n.pkg;
       kind = convert_kind kind;
@@ -954,11 +904,11 @@ let run ~sw env benv ~np ~os_dir ~html_dir ~(driver_tool : Tool.t)
   write_universes_if_requested ~snapshot_dir plan;
   let doc_count = Atomic.make 0 in
   let node_priority (n : build) =
-    if Hashtbl.mem plan.link_set n.hash then 3
-    else if Hashtbl.mem plan.compile_set n.hash then 2
-    else if Hashtbl.mem plan.doc_all_set n.hash then 2
-    else if Hashtbl.mem plan.tool_node_set n.hash then 1
-    else 0
+    match Hashtbl.find_opt plan.meta n.hash with
+    | Some { kind = Link; _ } -> 3
+    | Some { kind = Compile | Doc_all; _ } -> 2
+    | Some { kind = Tool; _ } -> 1
+    | Some { kind = Build; _ } | None -> 0
   in
   let open Day11_opam_build.Dag_executor in
   let is_cached (node : Build.t) =
@@ -1000,9 +950,9 @@ let run ~sw env benv ~np ~os_dir ~html_dir ~(driver_tool : Tool.t)
         (match kind_tag with
          | Build | Tool -> on_pkg_complete node ~cached ~success
          | Compile | Doc_all | Link -> ());
-        if success && (Hashtbl.mem plan.doc_all_set node.hash ||
-                       Hashtbl.mem plan.link_set node.hash) then
-          Atomic.incr doc_count;
+        if success &&
+           (match node_kind node with Doc_all | Link -> true | _ -> false)
+        then Atomic.incr doc_count;
         if (not cached) &&
            (stats.completed mod 100 = 0 || not success) then
           Printf.printf "  [%d/%d, %d ok, %d failed, %d cascade] %s: %s\n%!"
@@ -1023,16 +973,19 @@ let run ~sw env benv ~np ~os_dir ~html_dir ~(driver_tool : Tool.t)
     plan.all_nodes
     (fun node ->
       let ok = dispatch ~sw env node in
-      if ok && (Hashtbl.mem plan.doc_all_set node.hash ||
-                Hashtbl.mem plan.link_set node.hash) then
-        Atomic.incr doc_count;
+      if ok &&
+         (match node_kind node with Doc_all | Link -> true | _ -> false)
+      then Atomic.incr doc_count;
       ok);
   (* Count results *)
   let total_doc_count = ref 0 in
   let count_success hash =
     if Layer.is_ok env (Layer.of_hash ~os_dir hash) then incr total_doc_count
   in
-  Hashtbl.iter (fun _ h -> count_success h) plan.build_to_doc_hash;
+  Hashtbl.iter (fun _ (dn : doc_node) ->
+    match dn.kind with
+    | Compile | Doc_all -> count_success dn.layer.hash
+    | _ -> ()) plan.meta;
   let html_root = html_dir in
   let total_html =
     if Bos.OS.Dir.exists html_root |> Result.get_ok then
