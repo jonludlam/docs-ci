@@ -20,6 +20,10 @@ type entry = {
   kind : kind;
   deps : string list;
   (** Hashes of direct dependencies, in plan-construction order. *)
+  universe : string;
+  (** Universe hash of this node's doc-dep closure (see
+      {!Day11_solution.Universe}). ["" ] for tool nodes and for
+      dag.json files written before this field was added. *)
 }
 
 val path : Fpath.t -> Fpath.t

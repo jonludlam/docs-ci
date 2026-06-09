@@ -5,6 +5,10 @@ type entry = {
   pkg : OpamPackage.t;
   kind : kind;
   deps : string list;
+  universe : string;
+  (** Universe hash of this node's doc-dep closure. ["" ] for nodes
+      with no meaningful universe (tools) or old dag.json files
+      written before this field existed. *)
 }
 
 let kind_to_string = function
@@ -30,6 +34,7 @@ let entry_to_json (e : entry) : Yojson.Safe.t =
     "pkg", `String (OpamPackage.to_string e.pkg);
     "kind", `String (kind_to_string e.kind);
     "deps", `List (List.map (fun h -> `String h) e.deps);
+    "universe", `String e.universe;
   ]
 
 let to_json entries : Yojson.Safe.t =
@@ -56,7 +61,13 @@ let entry_of_json (j : Yojson.Safe.t) =
       | None -> failwith (Printf.sprintf "unknown kind %S" kind_s)
     in
     let deps = j |> member "deps" |> to_list |> List.map to_string in
-    Ok { hash; pkg; kind; deps }
+    let universe =
+      match member "universe" j with
+      | `String s -> s
+      | _ -> ""
+      | exception _ -> ""
+    in
+    Ok { hash; pkg; kind; deps; universe }
   with exn ->
     Rresult.R.error_msgf "Dag_marshal.entry_of_json: %s"
       (Printexc.to_string exn)
