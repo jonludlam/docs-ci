@@ -710,15 +710,31 @@ let snapshot_detail ~ctx name key =
               td [ txt (string_of_int n) ]) buckets in
             tr (th [ txt k ] :: cells)) kinds
           in
+          let total_for b = List.fold_left (fun acc k ->
+            acc + (try Hashtbl.find counts (k, b)
+                   with Not_found -> 0)) 0 kinds in
+          let pending_total = total_for "pending" in
           let overview =
-            [ h3 [ txt "DAG state" ];
-              p [ em [ txt "Every planned node classified by on-disk \
-                            layer status. Cascade = dispatch skipped \
-                            because a dep failed." ] ];
-              table ~a:[ a_class [ "data" ] ]
-                ~thead:(thead [ tr (th [ txt "Kind" ] ::
-                  List.map (fun b -> th [ txt b ]) buckets) ])
-                overview_rows ]
+            if pending_total > 0 then
+              (* Run still in flight — show the live per-kind table so
+                 progress (ok vs pending) is visible at a glance. *)
+              [ h3 [ txt "DAG state" ];
+                p [ em [ txt "Every planned node classified by on-disk \
+                              layer status. Cascade = dispatch skipped \
+                              because a dep failed." ] ];
+                table ~a:[ a_class [ "data" ] ]
+                  ~thead:(thead [ tr (th [ txt "Kind" ] ::
+                    List.map (fun b -> th [ txt b ]) buckets) ])
+                  overview_rows ]
+            else
+              (* Nothing pending — the run has finished; collapse the
+                 table to a one-line summary. *)
+              let ok = total_for "ok" and failed = total_for "failed"
+              and cascade = total_for "cascade" in
+              [ h3 [ txt "DAG state" ];
+                p [ txt (Printf.sprintf
+                  "All %d nodes finished — ok=%d, failed=%d, cascade=%d"
+                  (ok + failed + cascade) ok failed cascade) ] ]
           in
           let by_hash : (string, Day11_lib.Dag_marshal.entry) Hashtbl.t =
             Hashtbl.create (List.length entries) in
@@ -869,12 +885,13 @@ let snapshot_detail ~ctx name key =
         | Some ts ->
           [ p ~a:[ a_class [ "crumbs" ] ] [ em [ txt ("Created " ^ ts) ] ] ]
       in
-      (* The DAG-state overview and per-cascade breakdown are verbose
-         and secondary to failures; tuck them behind a fold. *)
-      let cascade_fold = match overview_section @ cascade_section with
+      (* Only the per-cascade breakdown (which node was blocked by which)
+         is verbose and secondary; tuck that behind a fold. The DAG-state
+         overview stays visible at the top as the live progress gauge. *)
+      let cascade_fold = match cascade_section with
         | [] -> []
         | content ->
-          [ details (summary [ txt "Cascade / DAG-state details" ]) content ]
+          [ details (summary [ txt "Cascaded nodes" ]) content ]
       in
       let r = timing "respond_ok+render" (fun () ->
         Context.respond_ok web_ctx ([
@@ -882,6 +899,7 @@ let snapshot_detail ~ctx name key =
           h2 [ txt (name ^ " / "); Templates.sha_span key ];
         ] @ created_line
           @ diff_link
+          @ overview_section
           @ [ h3 [ txt "Repos at this snapshot" ]; repos_table ]
           @ [ h3 [ txt "Failures" ] ]
           @ failures_section
