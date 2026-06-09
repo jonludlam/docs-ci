@@ -94,11 +94,16 @@ let doc_cleanup ~sw env upper =
     [inspect_layer]'s [Layer.is_ok] disagreeing with the
     [layer_status.jsonl] truth source. Caller must clean up
     [prep_dir]. *)
-let prepare ~(config : doc_config) ~build_layer pkg =
+let prepare ~(config : doc_config) ~build_layer ~universe pkg =
   let installed_libs = Installed_files.scan_libs ~layer_dir:build_layer in
   let installed_docs = Installed_files.scan_docs ~layer_dir:build_layer in
-  let universe = Command.compute_universe_hash
-    [ Fpath.basename build_layer ] in
+  (* [universe] is the package's doc-deps universe ([Universe.of_deps] of
+     its transitive doc_deps closure), supplied by the planner. It
+     namespaces the prep tree at [prep/universes/<universe>/…], which is
+     what voodoo classifies from — so the same build layer compiled under
+     two different universes produces two distinct, correctly-namespaced
+     outputs. Must NOT be recomputed from the build-layer hash: that
+     would collapse every doc-universe of a shared build onto one id. *)
   let tool_mounts = make_tool_mounts ~os_dir:config.os_dir
     ~driver_tool:config.driver_tool ~odoc_tool:config.odoc_tool in
   let prep_dir = Bos.OS.Dir.tmp "day11_doc_%s" |> Result.get_ok in
@@ -136,10 +141,10 @@ let debug_inspect_image =
    wrappers map that to the layer dir (compile/doc-all) or unit (link).
    Layer dirs are stacked build-deps first (build-time tooling) then
    compile layers (.odoc files) — order matters for overlayfs. *)
-let run_doc_phase ~sw env benv ~(config : doc_config) ~build_layer
+let run_doc_phase ~sw env benv ~(config : doc_config) ~build_layer ~universe
     ~actions ~phase ~meta_deps ~html_dir ~build_dirs ~label ~hash pkg
     : (Build.t, string) result =
-  match prepare ~config ~build_layer pkg with
+  match prepare ~config ~build_layer ~universe pkg with
   | None -> Error "no documentable libraries"
   | Some (universe, mounts, prep_dir) ->
     (* The HTML output dir is a bind-mount source; runc won't start if it
@@ -177,9 +182,9 @@ let run_doc_phase ~sw env benv ~(config : doc_config) ~build_layer
     ignore (Day11_sys.Sudo.rm_rf ~sw env prep_dir);
     result
 
-let compile ~sw env benv ~(config : doc_config) ~build_layer
+let compile ~sw env benv ~(config : doc_config) ~build_layer ~universe
     ~build_deps_layers ~dep_compile_layers ~hash pkg =
-  run_doc_phase ~sw env benv ~config ~build_layer
+  run_doc_phase ~sw env benv ~config ~build_layer ~universe
     ~actions:"compile-only" ~phase:Doc_meta.Compile
     ~meta_deps:(List.map Fpath.basename dep_compile_layers)
     ~html_dir:None
@@ -188,18 +193,18 @@ let compile ~sw env benv ~(config : doc_config) ~build_layer
   |> Result.map (fun node ->
        Day11_opam_layer.Build.dir ~os_dir:config.os_dir node)
 
-let link ~sw env benv ~(config : doc_config) ~build_layer
+let link ~sw env benv ~(config : doc_config) ~build_layer ~universe
     ~build_deps_layers ~compile_layer ~dep_compile_layers ~html_dir ~hash pkg =
-  run_doc_phase ~sw env benv ~config ~build_layer
+  run_doc_phase ~sw env benv ~config ~build_layer ~universe
     ~actions:"link-and-gen" ~phase:Doc_meta.Link ~meta_deps:[]
     ~html_dir:(Some html_dir)
     ~build_dirs:(build_deps_layers @ (compile_layer :: dep_compile_layers))
     ~label:"link" ~hash pkg
   |> Result.map ignore
 
-let doc_all ~sw env benv ~(config : doc_config) ~build_layer
+let doc_all ~sw env benv ~(config : doc_config) ~build_layer ~universe
     ~build_deps_layers ~dep_compile_layers ~html_dir ~hash pkg =
-  run_doc_phase ~sw env benv ~config ~build_layer
+  run_doc_phase ~sw env benv ~config ~build_layer ~universe
     ~actions:"all" ~phase:Doc_meta.Doc_all
     ~meta_deps:(List.map Fpath.basename dep_compile_layers)
     ~html_dir:(Some html_dir)

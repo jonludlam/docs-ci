@@ -28,13 +28,17 @@ val compile :
   Day11_opam_build.Types.build_env ->
   config:doc_config ->
   build_layer:Fpath.t ->
+  universe:string ->
   build_deps_layers:Fpath.t list ->
   dep_compile_layers:Fpath.t list ->
   hash:string ->
   OpamPackage.t ->
   (Fpath.t, string) result
-(** [compile env benv ~config ~build_layer ~build_deps_layers
+(** [compile env benv ~config ~build_layer ~universe ~build_deps_layers
     ~dep_compile_layers ~hash pkg] runs the odoc compile phase for [pkg].
+    [universe] is the doc-deps universe id ([Universe.of_deps] of the
+    transitive doc_deps closure); it namespaces the prep tree so the same
+    build layer compiled under different universes yields distinct outputs.
     Reads source [.cmti]/[.ml] files from [build_layer], stacks
     [build_deps_layers] (for [ocamlobjinfo] and other build tools) and
     [dep_compile_layers] (for cross-reference resolution), and produces
@@ -53,6 +57,7 @@ val link :
   Day11_opam_build.Types.build_env ->
   config:doc_config ->
   build_layer:Fpath.t ->
+  universe:string ->
   build_deps_layers:Fpath.t list ->
   compile_layer:Fpath.t ->
   dep_compile_layers:Fpath.t list ->
@@ -81,13 +86,14 @@ val doc_all :
   Day11_opam_build.Types.build_env ->
   config:doc_config ->
   build_layer:Fpath.t ->
+  universe:string ->
   build_deps_layers:Fpath.t list ->
   dep_compile_layers:Fpath.t list ->
   html_dir:Fpath.t ->
   hash:string ->
   OpamPackage.t ->
   (Fpath.t, string) result
-(** [doc_all env benv ~config ~build_layer ~dep_compile_layers
+(** [doc_all env benv ~config ~build_layer ~universe ~dep_compile_layers
     ~html_dir ~hash pkg] runs compile + link + HTML generation in a
     single container invocation. Returns the compile layer directory
     (which contains the [.odoc] output for use by dependents).
