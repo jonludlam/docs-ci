@@ -45,7 +45,8 @@ let platform = function
 
 let opam_arch = function
   | "x86_64" | "amd64" -> "x86_64"
-  | "aarch64" -> "aarch64"
+  (* opam's release assets use [arm64], not the kernel's [aarch64]. *)
+  | "aarch64" | "arm64" -> "arm64"
   | "armv7l" -> "armhf"
   | "i386" | "i486" | "i586" | "i686" -> "i686"
   | arch -> arch
