@@ -39,11 +39,17 @@ let start () =
     (Filename.get_temp_dir_name ())
     (Printf.sprintf "day11-fork-%d.sock" (Unix.getpid ())) in
   let helper_bin =
-    (* Look for the helper binary next to the main binary, or in PATH *)
-    let dir = Filename.dirname Sys.executable_name in
-    let candidate = Filename.concat dir "day11-fork-helper" in
-    if Sys.file_exists candidate then candidate
-    else "day11-fork-helper"
+    (* [DAY11_FORK_HELPER] overrides the lookup — used by the test suite
+       (where the helper isn't on PATH or beside the test binary) and
+       available as a deployment hook for non-standard install layouts.
+       Otherwise look next to the main binary, then fall back to PATH. *)
+    match Sys.getenv_opt "DAY11_FORK_HELPER" with
+    | Some p -> p
+    | None ->
+      let dir = Filename.dirname Sys.executable_name in
+      let candidate = Filename.concat dir "day11-fork-helper" in
+      if Sys.file_exists candidate then candidate
+      else "day11-fork-helper"
   in
   (* [sock_path] is derived from our pid, which the OS reuses across
      runs. With a persistent TMPDIR (a real fs, as the daemon now
