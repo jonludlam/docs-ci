@@ -381,17 +381,20 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
   List.iter (fun (node : build) ->
     if not (Hashtbl.mem build_by_hash node.hash) then
       Hashtbl.replace build_by_hash node.hash node) tool_nodes;
-  let needs_split : (string, bool) Hashtbl.t = Hashtbl.create 64 in
+  (* A package needs split compile+link (rather than a combined doc-all)
+     if ANY solution flags it via [Doc_deps.needs_separate_link]
+     (x-extra-doc-deps). Tracked by package name+version and applied to
+     every build hash of that package, so the blessed universe always
+     gets its split link. *)
+  let split_pkgs : (string, unit) Hashtbl.t = Hashtbl.create 64 in
   List.iter (fun (_target, (result : Day11_solution.Solve_result.t)) ->
-    let compiler = find_compiler result.build_deps in
-    let compiler_s = match compiler with
-      | Some c -> OpamPackage.to_string c | None -> "" in
     OpamPackage.Map.iter (fun pkg _deps ->
-      let pkg_s = OpamPackage.to_string pkg in
       if Doc_deps.needs_separate_link result pkg then
-        Hashtbl.replace needs_split (pkg_s ^ ":" ^ compiler_s) true
+        Hashtbl.replace split_pkgs (OpamPackage.to_string pkg) ()
     ) result.build_deps
   ) solutions;
+  let needs_split_pkg (n : build) =
+    Hashtbl.mem split_pkgs (OpamPackage.to_string n.pkg) in
   (* Universe-aware lookup: (pkg_str, universe_str) -> build_hash.
      A package identified only by (name, version) is ambiguous across
      build universes — different transitive dep closures of the same
@@ -513,23 +516,6 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
     ) result.doc_deps
   ) solutions;
 
-  let needs_split_bh : (string, bool) Hashtbl.t = Hashtbl.create 64 in
-  (* If ANY solution marks a package as needing split (because of
-     x-extra-doc-deps), apply it to ALL build hashes for that package.
-     Otherwise the blessed universe might not get split link. *)
-  let split_pkgs : (string, unit) Hashtbl.t = Hashtbl.create 64 in
-  Hashtbl.iter (fun key _ ->
-    match String.index_opt key ':' with
-    | None -> ()
-    | Some i ->
-      let pkg_s = String.sub key 0 i in
-      Hashtbl.replace split_pkgs pkg_s ()
-  ) needs_split;
-  Hashtbl.iter (fun bh (node : build) ->
-    let pkg_s = OpamPackage.to_string node.pkg in
-    if Hashtbl.mem split_pkgs pkg_s then
-      Hashtbl.replace needs_split_bh bh true
-  ) build_by_hash;
   (* Blessing must operate over the same universe space that DAG nodes
      advertise — and after the doc-deps universe switch in dag.ml each
      [node.universe] reflects [doc_deps], not [build_deps]. Feed
@@ -549,8 +535,6 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
   in
 
   (* Build doc DAG nodes with deterministic hashes *)
-  let compile_nodes : (string, build) Hashtbl.t = Hashtbl.create 64 in
-  let doc_all_nodes : (string, build) Hashtbl.t = Hashtbl.create 64 in
   let link_nodes_list = ref [] in
   let compile_hash_cache : (string, string) Hashtbl.t = Hashtbl.create 64 in
   (* [univ_of] is the current solution's [pkg -> U] assignment; a node's
@@ -577,8 +561,7 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
          O(N²) blowup of the previous v2 formulation for large DAGs. *)
       let dep_compile_hashes =
         List.map (compute_compile_hash ~univ_of) node.deps in
-      let phase = if Hashtbl.mem needs_split_bh node.hash
-        then "compile" else "doc-all" in
+      let phase = if needs_split_pkg node then "compile" else "doc-all" in
       let hash = Day11_layer.Hash.of_strings
         ([ phase; "v4"; node.hash; u_s; composite_tool_hash;
            (if blessed then "blessed" else "unblessed") ]
@@ -599,11 +582,12 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
      patched before its dep would capture by value, leaving stale
      un-patched records embedded in the dep graph. This recursive
      construction sidesteps the issue entirely. *)
+  (* [doc_node_cache] is the single store of compile/doc-all doc nodes,
+     keyed by [(build_hash, U)] — one per universe a package appears in.
+     [None] marks a build node with no doc node of its own (so it isn't
+     reprocessed); the link pass and the final node lists are all derived
+     from this one table by filtering the [Some]s. *)
   let doc_node_cache : (string, doc_node option) Hashtbl.t =
-    Hashtbl.create 1024 in
-  (* Index from a build hash to its compile/doc-all doc node, so the
-     link pass can resolve the solution's doc-deps to doc nodes. *)
-  let doc_node_by_build : (string, doc_node) Hashtbl.t =
     Hashtbl.create 1024 in
   (* When a build node has no doc node of its own (non-OCaml package
      like [conf-pkg-config], or a node whose compiler has no odoc
@@ -649,26 +633,21 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
               |> List.rev
             in
             let hash = compute_compile_hash ~univ_of n in
-            let kind =
-              if Hashtbl.mem needs_split_bh n.hash then Compile else Doc_all in
+            let kind = if needs_split_pkg n then Compile else Doc_all in
             let layer : build =
               { hash; pkg = n.pkg;
                 deps = [ n; driver_final; odoc_final ]
                        @ List.map (fun (dn : doc_node) -> dn.layer) doc_deps;
                 universe = Day11_solution.Universe.dummy }
             in
-            (if kind = Compile then Hashtbl.replace compile_nodes nk layer
-             else Hashtbl.replace doc_all_nodes nk layer);
-            let dn = {
+            Some {
               build_node = n; kind; layer; doc_deps;
               compile_layer = None;
               compiler = Hashtbl.find_opt node_compiler n.hash;
               odoc_tool = Some odoc_tool;
               universe = u_s;
               blessed = is_blessed_u n.pkg u;
-            } in
-            Hashtbl.replace doc_node_by_build nk dn;
-            Some dn
+            }
       in
       Hashtbl.add doc_node_cache nk r;
       r
@@ -699,7 +678,8 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
     | Some u -> u | None -> Day11_solution.Universe.dummy in
   List.iter (fun n -> ignore (make_doc_node ~univ_of:tool_univ_of n)) tool_nodes;
   let compile_docall_doc_nodes =
-    Hashtbl.fold (fun _ dn acc -> dn :: acc) doc_node_by_build [] in
+    Hashtbl.fold (fun _ r acc -> match r with Some dn -> dn :: acc | None -> acc)
+      doc_node_cache [] in
   (* Link pass: one link node per compile node (a doc-all is already its
      own link). Non-recursive — a link never depends on a link. The mount
      set is the package's *doc-deps* closure (wider than the compile
@@ -731,11 +711,11 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
         let dep_doc_nodes =
           let by_layer = Hashtbl.create 16 in
           Hashtbl.iter (fun k _ ->
-            match Hashtbl.find_opt doc_node_by_build k with
-            | Some ddn ->
+            match Hashtbl.find_opt doc_node_cache k with
+            | Some (Some ddn) ->
               if not (Hashtbl.mem by_layer ddn.layer.hash) then
                 Hashtbl.replace by_layer ddn.layer.hash ddn
-            | None -> ()
+            | _ -> ()
           ) seen;
           Hashtbl.fold (fun _ ddn acc -> ddn :: acc) by_layer []
         in
@@ -761,8 +741,11 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
       | _ -> None
     ) compile_docall_doc_nodes
   in
-  let compile_list = Hashtbl.fold (fun _ cn acc -> cn :: acc) compile_nodes [] in
-  let doc_all_list = Hashtbl.fold (fun _ dn acc -> dn :: acc) doc_all_nodes [] in
+  let layers_of_kind k =
+    List.filter_map (fun (dn : doc_node) ->
+      if dn.kind = k then Some dn.layer else None) compile_docall_doc_nodes in
+  let compile_list = layers_of_kind Compile in
+  let doc_all_list = layers_of_kind Doc_all in
   Printf.printf "  plan: %d build, %d tool, %d compile, %d doc-all, %d link\n%!"
     (List.length nodes) (List.length tool_nodes)
     (List.length compile_list) (List.length doc_all_list)
