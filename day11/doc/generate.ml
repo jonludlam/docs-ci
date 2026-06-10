@@ -174,13 +174,13 @@ let pp_missing_deps ~kind ppf missing =
       pp_dep_status status
   ) missing
 
-let compile_package ~sw env benv ~os_dir ~odoc_tool ~blessed ~universe
-    ~driver_tool ~doc_deps ~dag_hash (node : build) =
-  match odoc_tool with
+let compile_package ~sw env benv ~os_dir ~driver_tool (dn : doc_node) =
+  match dn.odoc_tool with
   | None -> false
   | Some (odoc_tool : Tool.t) ->
+    let node = dn.build_node in
     let config : Doc_build.doc_config =
-      { driver_tool; odoc_tool; os_dir; blessed } in
+      { driver_tool; odoc_tool; os_dir; blessed = dn.blessed } in
     let build_layer = Build.dir ~os_dir node in
     (* No no-doc short-circuit: even packages with neither libs nor
        [.mld] files (CLI-only opam wrappers etc.) go through voodoo,
@@ -191,7 +191,7 @@ let compile_package ~sw env benv ~os_dir ~odoc_tool ~blessed ~universe
        one extra container per non-documentable package per profile,
        which is small and amortised by day11's cache. *)
     match
-      find_dep_compile_layers env ~os_dir doc_deps,
+      find_dep_compile_layers env ~os_dir dn.doc_deps,
       find_build_deps_layers env ~os_dir node
     with
     | Error missing, _ ->
@@ -205,17 +205,21 @@ let compile_package ~sw env benv ~os_dir ~odoc_tool ~blessed ~universe
         (pp_missing_deps ~kind:"build dep") missing;
       false
     | Ok dep_compile_layers, Ok build_deps_layers ->
-      match Doc_build.compile ~sw env benv ~config ~build_layer ~universe
-              ~build_deps_layers ~dep_compile_layers ~hash:dag_hash node.pkg with
+      match Doc_build.compile ~sw env benv ~config ~build_layer
+              ~universe:dn.universe
+              ~build_deps_layers ~dep_compile_layers
+              ~hash:dn.layer.hash node.pkg with
       | Ok _ -> true
       | Error msg ->
         Printf.printf "  %s: compile FAILED (%s)\n%!"
           (OpamPackage.to_string node.pkg) msg;
         false
 
-let link_package ~sw env benv ~os_dir ~html_dir
-    ~odoc_tool ~blessed ~universe ~driver_tool ~doc_deps ~(compile_node : build)
-    ~dag_hash (node : build) =
+let link_package ~sw env benv ~os_dir ~html_dir ~driver_tool (dn : doc_node) =
+  match dn.compile_layer with
+  | None -> true  (* a link always has a compile sibling *)
+  | Some (compile_node : build) ->
+  let node = dn.build_node in
   let build_layer = Build.dir ~os_dir node in
   (* No no-doc short-circuit: see [compile_package]. The compile node
      has already produced a real layer for non-documentable packages
@@ -224,18 +228,18 @@ let link_package ~sw env benv ~os_dir ~html_dir
   let compile_layer = Layer.of_hash ~os_dir compile_node.hash in
   if not (Layer.is_ok env compile_layer) then false
   else
-  match odoc_tool with
+  match dn.odoc_tool with
   | None -> false
   | Some (odoc_tool : Tool.t) ->
     let config : Doc_build.doc_config =
-      { driver_tool; odoc_tool; os_dir; blessed } in
+      { driver_tool; odoc_tool; os_dir; blessed = dn.blessed } in
     let compile_layer = Layer.dir compile_layer in
     (* The link's mount set is exactly the layers of its [doc_deps] —
        the transitive doc-dep closure built in the link pass — so
        [find_dep_compile_layers] over them gives the same set (deduped
        by layer hash). Returns [Error] (link NOT dispatched) if any is
        missing/failed. *)
-    match find_dep_compile_layers env ~os_dir doc_deps,
+    match find_dep_compile_layers env ~os_dir dn.doc_deps,
           find_build_deps_layers env ~os_dir node with
     | Error missing, _ ->
       Fmt.pr "  %s: link NOT DISPATCHED — %a@."
@@ -248,27 +252,26 @@ let link_package ~sw env benv ~os_dir ~html_dir
         (pp_missing_deps ~kind:"build dep") missing;
       false
     | Ok dep_compile_layers, Ok build_deps_layers ->
-      match Doc_build.link ~sw env benv ~config ~build_layer ~universe
-              ~build_deps_layers ~compile_layer
-              ~dep_compile_layers ~html_dir ~hash:dag_hash node.pkg with
+      match Doc_build.link ~sw env benv ~config ~build_layer
+              ~universe:dn.universe ~build_deps_layers ~compile_layer
+              ~dep_compile_layers ~html_dir ~hash:dn.layer.hash node.pkg with
       | Ok () -> true
       | Error msg ->
         Printf.printf "  %s: link FAILED (%s)\n%!"
           (OpamPackage.to_string node.pkg) msg;
         false
 
-let doc_all_package ~sw env benv ~os_dir ~html_dir
-    ~odoc_tool ~blessed ~universe
-    ~driver_tool ~doc_deps ~dag_hash (node : build) =
-  match odoc_tool with
+let doc_all_package ~sw env benv ~os_dir ~html_dir ~driver_tool (dn : doc_node) =
+  match dn.odoc_tool with
   | None -> false
   | Some (odoc_tool : Tool.t) ->
+    let node = dn.build_node in
     let config : Doc_build.doc_config =
-      { driver_tool; odoc_tool; os_dir; blessed } in
+      { driver_tool; odoc_tool; os_dir; blessed = dn.blessed } in
     let build_layer = Build.dir ~os_dir node in
     (* No no-doc short-circuit: see [compile_package]. *)
     match
-      find_dep_compile_layers env ~os_dir doc_deps,
+      find_dep_compile_layers env ~os_dir dn.doc_deps,
       find_build_deps_layers env ~os_dir node
     with
     | Error missing, _ ->
@@ -282,9 +285,9 @@ let doc_all_package ~sw env benv ~os_dir ~html_dir
         (pp_missing_deps ~kind:"build dep") missing;
       false
     | Ok dep_compile_layers, Ok build_deps_layers ->
-      match Doc_build.doc_all ~sw env benv ~config ~build_layer ~universe
-              ~build_deps_layers ~dep_compile_layers
-              ~html_dir ~hash:dag_hash node.pkg with
+      match Doc_build.doc_all ~sw env benv ~config ~build_layer
+              ~universe:dn.universe ~build_deps_layers ~dep_compile_layers
+              ~html_dir ~hash:dn.layer.hash node.pkg with
       | Ok _ -> true
       | Error msg ->
         Printf.printf "  %s: doc-all FAILED (%s)\n%!"
@@ -685,27 +688,11 @@ let make_dispatch benv ~os_dir ~html_dir ~(plan : internal_plan)
     match Hashtbl.find_opt plan.meta node.hash with
     | None -> dispatch_other ~sw env node
     | Some dn ->
-      let build_node = dn.build_node in
+      let driver_tool = plan.driver_tool in
       (match dn.kind with
-       | Compile ->
-         compile_package ~sw env benv ~os_dir ~odoc_tool:dn.odoc_tool
-           ~blessed:dn.blessed ~universe:dn.universe
-           ~driver_tool:plan.driver_tool
-           ~doc_deps:dn.doc_deps ~dag_hash:node.hash build_node
-       | Doc_all ->
-         doc_all_package ~sw env benv ~os_dir ~html_dir
-           ~odoc_tool:dn.odoc_tool ~blessed:dn.blessed ~universe:dn.universe
-           ~driver_tool:plan.driver_tool
-           ~doc_deps:dn.doc_deps ~dag_hash:node.hash build_node
-       | Link ->
-         (match dn.compile_layer with
-          | None -> true  (* a link always has a compile sibling *)
-          | Some compile_node ->
-            link_package ~sw env benv ~os_dir ~html_dir
-              ~odoc_tool:dn.odoc_tool ~blessed:dn.blessed ~universe:dn.universe
-              ~driver_tool:plan.driver_tool
-              ~doc_deps:dn.doc_deps ~compile_node
-              ~dag_hash:node.hash build_node)
+       | Compile -> compile_package ~sw env benv ~os_dir ~driver_tool dn
+       | Doc_all -> doc_all_package ~sw env benv ~os_dir ~html_dir ~driver_tool dn
+       | Link -> link_package ~sw env benv ~os_dir ~html_dir ~driver_tool dn
        | Build | Tool -> dispatch_other ~sw env node)
 
 (* ── Public API ──────────────────────────────────────────────── *)
