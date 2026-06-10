@@ -126,6 +126,13 @@ let generate_dockerfile ~os_distribution ~os_version ~arch ~uid ~gid
     @@ run "mkdir -p /home/opam/empty-repo/packages"
     @@ run "echo 'opam-version: \"2.0\"' > /home/opam/empty-repo/repo"
     @@ run "opam init -k local -a /home/opam/empty-repo --bare --disable-sandboxing -y"
+    (* Pull source archives through opam.ocaml.org's cache rather than
+       hitting each package's upstream (GitHub etc.) directly — those
+       fail intermittently and stall builds. Appended to the root config
+       after [opam init] creates it, so it applies to every build that
+       runs in this base image. *)
+    @@ run "echo 'archive-mirrors: \"https://opam.ocaml.org/cache\"' \
+            >> /home/opam/.opam/config"
     @@ run "opam switch create default --empty"
   in
   stage1 @@ final
