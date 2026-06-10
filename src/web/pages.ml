@@ -68,7 +68,19 @@ let snapshots_base ctx name =
     finished timestamp) or [None] if not cached. Accepts either the
     short (12-char) form or the full 32-char hash — we match on the
     [substr(key,1,N)] prefix for whichever length we got. *)
-(* OCurrent keeps its cache db at <state-dir>/var/db/sqlite.db. Resolve
+(* TODO: stop recovering the job id from OCurrent's cache db. We already
+   hold [Current.Job.id job] at build time in [day11_prep.ml]'s [Op.build]
+   (line ~95) and throw it away. Better: stash [hash -> job_id] there and
+   persist it on the [History.entry] the recorder appends, so the web
+   reads [e.job_id] straight from history.jsonl. That is durable,
+   per-entry (each retry/older run links to *its own* job, not just the
+   latest), and drops the coupling to OCurrent's cache schema + db path.
+   Keep the sqlite lookup below as a fallback for pre-existing snapshots.
+   Plumbing: hash->job_id map populated before [ctx.dispatch]
+   (day11_prep.ml:134), new [job_id] field on History.entry, prefer it in
+   [job_id_for_hash]/the package page.
+
+   OCurrent keeps its cache db at <state-dir>/var/db/sqlite.db. Resolve
    it at query time: [DOCS_CI_JOB_DB] wins if set, otherwise pick the
    first candidate that exists — the container's image WORKDIR
    ([/var/lib/ocurrent]) then the CWD-relative OCurrent default. Avoids
