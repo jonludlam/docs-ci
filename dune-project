@@ -18,7 +18,7 @@
  (synopsis "OCaml package build and documentation system")
  (allow_empty)
  (depends
-  (ocaml (>= 5.1))
+  (ocaml (>= 5.3))
   (opam-format (>= 2.1.4))
   (opam-0install (>= 0.4.3))
   yojson
@@ -42,7 +42,7 @@
  (synopsis "OCurrent pipeline for building documentation")
  (description "OCurrent pipeline for building HTML documentation for the ocaml.org website.")
  (depends
-  (ocaml (>= 5.1))
+  (ocaml (>= 5.3))
   (opam-format (>= 2.1.4))
   (current (>= 0.6.6))
    current_web
@@ -97,7 +97,7 @@
  (name ocaml-docs-ci-client)
  (synopsis "Command-line client for ocaml-docs-ci")
  (depends
-  (ocaml (>= 5.1))
+  (ocaml (>= 5.3))
   (logs (>= 0.7.0))
   (fmt (>= 0.8.9))
   (current_rpc (>= 0.6.6))
