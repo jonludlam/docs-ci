@@ -37,6 +37,8 @@ val run :
   np:int ->
   os_dir:Fpath.t ->
   html_dir:Fpath.t ->
+  cache:Day11_opam_build.Hash_cache.t ->
+  base_hash:string ->
   driver_tool:Day11_opam_layer.Tool.t ->
   odoc_tools:(OpamPackage.t * Day11_opam_layer.Tool.t) list ->
   tool_source_dirs:string OpamPackage.Name.Map.t ->
@@ -95,6 +97,8 @@ type internal_plan = {
 
 val build_internal_plan :
   os_dir:Fpath.t ->
+  cache:Day11_opam_build.Hash_cache.t ->
+  base_hash:string ->
   driver_tool:Day11_opam_layer.Tool.t ->
   odoc_tools:(OpamPackage.t * Day11_opam_layer.Tool.t) list ->
   nodes:Day11_opam_layer.Build.t list ->

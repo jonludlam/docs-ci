@@ -85,6 +85,7 @@ let build_plan () =
   let driver_tool = mk_tool ~hash:"driverhash00" ~pkg:driver_pkg in
   let odoc_tools = [ (comp, mk_tool ~hash:"odochash0000" ~pkg:odoc_pkg) ] in
   Day11_doc.Generate.build_internal_plan ~os_dir:(Fpath.v "/tmp/os")
+    ~cache ~base_hash:"test-base"
     ~driver_tool ~odoc_tools ~nodes ~solutions
 
 (* The richer universe pkgp should be blessed in: of_deps of its

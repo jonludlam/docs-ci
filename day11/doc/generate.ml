@@ -307,8 +307,8 @@ type internal_plan = {
 (** Build the doc DAG: compute compile/link/doc-all nodes with
     deterministic hashes, derive all dispatch tables. Pure function
     of the inputs — no mutable state escapes. *)
-let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
-    ~nodes ~solutions =
+let build_internal_plan ~os_dir:_ ~cache ~base_hash ~(driver_tool : Tool.t)
+    ~odoc_tools ~nodes ~solutions =
   (* Collect tool nodes *)
   let tool_nodes =
     let seen = Hashtbl.create 64 in
@@ -329,46 +329,13 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
       String.equal n.hash tool.hash) tool.builds in
     (compiler, tool, final)
   ) odoc_tools in
-  (* Derive compiler per build node *)
-  let node_compiler : (string, OpamPackage.t) Hashtbl.t =
-    Hashtbl.create (List.length nodes) in
-  let rec derive_compiler (node : build) =
-    match Hashtbl.find_opt node_compiler node.hash with
-    | Some c -> Some c
-    | None ->
-      if List.exists (OpamPackage.Name.equal (OpamPackage.name node.pkg))
-           solver_compiler_names then begin
-        Hashtbl.replace node_compiler node.hash node.pkg;
-        Some node.pkg
-      end else
-        let result = List.find_map (fun (dep : build) ->
-          derive_compiler dep
-        ) node.deps in
-        (match result with
-         | Some c -> Hashtbl.replace node_compiler node.hash c
-         | None -> ());
-        result
+  let odoc_tool_of_compiler compiler =
+    List.find_opt (fun (c, _) -> OpamPackage.equal c compiler) odoc_tools
+    |> Option.map snd
   in
-
-  List.iter (fun node -> ignore (derive_compiler node)) nodes;
-  List.iter (fun node -> ignore (derive_compiler node)) tool_nodes;
-
-  (* find_odoc_tool_for_hash: given a build node hash, return the matching odoc tool *)
-  let find_odoc_tool_for_hash build_hash =
-    match Hashtbl.find_opt node_compiler build_hash with
-    | None -> None
-    | Some compiler ->
-      List.find_opt (fun (c, _) ->
-        OpamPackage.equal c compiler) odoc_tools
-      |> Option.map snd
-  in
-  let find_odoc_final_for_hash build_hash =
-    match Hashtbl.find_opt node_compiler build_hash with
-    | None -> None
-    | Some compiler ->
-      List.find_opt (fun (c, _, _) ->
-        OpamPackage.equal c compiler) odoc_finals
-      |> Option.map (fun (_, _, final) -> final)
+  let odoc_final_of_compiler compiler =
+    List.find_opt (fun (c, _, _) -> OpamPackage.equal c compiler) odoc_finals
+    |> Option.map (fun (_, _, final) -> final)
   in
   (* Build indexes *)
   (* Index ALL nodes (build + tool) by hash so find_dep_compile_layers
@@ -395,59 +362,10 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
   ) solutions;
   let needs_split_pkg (n : build) =
     Hashtbl.mem split_pkgs (OpamPackage.to_string n.pkg) in
-  (* Universe-aware lookup: (pkg_str, universe_str) -> build_hash.
-     A package identified only by (name, version) is ambiguous across
-     build universes — different transitive dep closures of the same
-     package produce different compile-layer universe paths and
-     different .odoc files. Always key by [build_hash], or by
-     (pkg_str, universe_str), which is what the DAG uses. *)
-  let pkg_universe_to_hash : (string * string, string) Hashtbl.t =
-    Hashtbl.create (List.length nodes) in
-  Hashtbl.iter (fun bh (node : build) ->
-    let pkg_s = OpamPackage.to_string node.pkg in
-    let u_s = Day11_solution.Universe.to_string node.universe in
-    Hashtbl.replace pkg_universe_to_hash (pkg_s, u_s) bh
-  ) build_by_hash;
-  (* Defensive fallback for [node_compiler]: [derive_compiler] only
-     assigns a compiler to a node if one is reachable through its
-     build-dep closure. Packages like [conf-pkg-config] have no
-     compiler in their deps, so they'd be left unassigned — and then
-     [find_odoc_tool_for_hash] returns None, which flips their
-     [composite_tool_hash] from the tools' hash to [""] in
-     [compute_compile_hash], perturbing every ancestor's compile
-     hash that stacks them as a dep. Assign a compiler from the
-     containing solution so conf-* nodes get a stable hash. *)
-
-  List.iter (fun (_target, (result : Day11_solution.Solve_result.t)) ->
-    match find_compiler result.build_deps with
-    | None -> ()
-    | Some compiler ->
-      (* Universe is now keyed by doc-deps closure (see dag.ml), so
-         the lookup must use [doc_deps] transitively too — otherwise
-         [pkg_universe_to_hash] never resolves. *)
-      let trans = Day11_solution.Deps.transitive_deps result.doc_deps in
-      OpamPackage.Map.iter (fun pkg deps ->
-        let u_s = Day11_solution.Universe.to_string
-          (Day11_solution.Universe.of_deps deps) in
-        let key = (OpamPackage.to_string pkg, u_s) in
-        match Hashtbl.find_opt pkg_universe_to_hash key with
-        | None -> ()
-        | Some bh ->
-          if not (Hashtbl.mem node_compiler bh) then
-            Hashtbl.replace node_compiler bh compiler
-      ) trans
-  ) solutions;
-
-  (* ── Per-(solution, pkg) build-node + universe resolution ─────
-     The build layer hash is a function of the build-deps closure
-     only, so a (pkg, build-closure) pair identifies exactly one
-     build node — independent of the doc-only extras that distinguish
-     universes. Index it, so the solution-driven doc-node enumeration
-     can pair each (solution, pkg) with both its build node (by build
-     closure) and its doc-deps universe U ([Universe.of_deps] of the
-     transitive doc_deps closure). *)
+  (* Transitive build-dep package set of a node — gives a tool build
+     (which isn't in any solution) a universe. *)
   let node_closure_cache : (string, OpamPackage.Set.t) Hashtbl.t =
-    Hashtbl.create 1024 in
+    Hashtbl.create 256 in
   let rec node_closure (n : build) =
     match Hashtbl.find_opt node_closure_cache n.hash with
     | Some s -> s
@@ -458,33 +376,35 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
         OpamPackage.Set.empty n.deps in
       Hashtbl.replace node_closure_cache n.hash s; s
   in
-  let closure_sig pkg (closure : OpamPackage.Set.t) =
-    (* [Set.elements] is already in [OpamPackage.compare] order. *)
-    OpamPackage.to_string pkg ^ "\x00" ^
-    String.concat "\n"
-      (List.map OpamPackage.to_string (OpamPackage.Set.elements closure))
+  (* Compiler per tool build — tools aren't in a solution, so derive it
+     from the build-dep closure (the compiler package sits in there). *)
+  let tool_compiler : (string, OpamPackage.t) Hashtbl.t = Hashtbl.create 64 in
+  let rec derive_tool_compiler (n : build) =
+    match Hashtbl.find_opt tool_compiler n.hash with
+    | Some c -> Some c
+    | None ->
+      let c =
+        if List.exists (OpamPackage.Name.equal (OpamPackage.name n.pkg))
+             solver_compiler_names then Some n.pkg
+        else List.find_map derive_tool_compiler n.deps in
+      (match c with
+       | Some c -> Hashtbl.replace tool_compiler n.hash c | None -> ());
+      c
   in
-  let bh_of_pkg_closure : (string, string) Hashtbl.t = Hashtbl.create 1024 in
-  List.iter (fun (n : build) ->
-    Hashtbl.replace bh_of_pkg_closure
-      (closure_sig n.pkg (node_closure n)) n.hash) nodes;
-  let node_of_pkg ~trans_build pkg =
-    let closure = match OpamPackage.Map.find_opt pkg trans_build with
-      | Some s -> s | None -> OpamPackage.Set.empty in
-    match Hashtbl.find_opt bh_of_pkg_closure (closure_sig pkg closure) with
-    | Some bh -> Hashtbl.find_opt build_by_hash bh
-    | None -> None
+  List.iter (fun n -> ignore (derive_tool_compiler n)) tool_nodes;
+  (* Build layer hash for [pkg] in a solution — exactly what dag.ml
+     computes (same cache, same package list [pkg :: trans build-deps]),
+     so [build_by_hash] resolves it. This pairs a (solution, pkg) with
+     its build node directly, replacing the old closure-matching index. *)
+  let bh_of ~trans_build pkg =
+    let deps = match OpamPackage.Map.find_opt pkg trans_build with
+      | Some s -> OpamPackage.Set.elements s | None -> [] in
+    Day11_opam_build.Hash_cache.layer_hash cache ~base_hash (pkg :: deps)
   in
-  let universe_of ~trans_doc pkg =
-    match OpamPackage.Map.find_opt pkg trans_doc with
-    | Some deps -> Day11_solution.Universe.of_deps deps
-    | None -> Day11_solution.Universe.dummy
-  in
-  (* Per-universe doc-dep edges: [doc_dep_hashes[(bh,u)]] is the list
-     of direct doc-deps [(dep_bh, dep_u)] of node [(bh, u)] across all
-     solutions. The link walk follows these transitively to assemble a
-     link node's mount set — keyed by [(bh, u)] so two universes that
-     share a build hash never bleed their closures into each other. *)
+  (* Per-universe doc-dep edges: [doc_dep_hashes[(bh,u)]] = the direct
+     doc-deps [(dep_bh, dep_u)] of node [(bh, u)]. Populated in the
+     solution pass below; the link walk follows it transitively, keyed by
+     [(bh, u)] so universes sharing a build hash don't bleed closures. *)
   let doc_dep_hashes : (string, (string * string) list) Hashtbl.t =
     Hashtbl.create 64 in
   let dep_key bh u_s = bh ^ "@" ^ u_s in
@@ -495,26 +415,6 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
     if not (List.mem e existing) then
       Hashtbl.replace doc_dep_hashes key (e :: existing)
   in
-  List.iter (fun (_target, (result : Day11_solution.Solve_result.t)) ->
-    let trans_doc = Day11_solution.Deps.transitive_deps result.doc_deps in
-    let trans_build = Day11_solution.Deps.transitive_deps result.build_deps in
-    let resolve pkg =
-      match node_of_pkg ~trans_build pkg with
-      | None -> None
-      | Some (n : build) ->
-        Some (n.hash,
-              Day11_solution.Universe.to_string (universe_of ~trans_doc pkg))
-    in
-    OpamPackage.Map.iter (fun pkg direct ->
-      match resolve pkg with
-      | None -> ()
-      | Some (bh, u_s) ->
-        OpamPackage.Set.iter (fun dep ->
-          match resolve dep with
-          | Some (dep_bh, dep_u_s) -> add_dep_edge ~bh ~u_s ~dep_bh ~dep_u_s
-          | None -> ()) direct
-    ) result.doc_deps
-  ) solutions;
 
   (* Blessing must operate over the same universe space that DAG nodes
      advertise — and after the doc-deps universe switch in dag.ml each
@@ -534,106 +434,59 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
     | None -> false
   in
 
-  (* Build doc DAG nodes with deterministic hashes *)
   let link_nodes_list = ref [] in
-  let compile_hash_cache : (string, string) Hashtbl.t = Hashtbl.create 64 in
-  (* [univ_of] is the current solution's [pkg -> U] assignment; a node's
-     compile identity folds in its own [U] (so the same build layer
-     compiled under different universes gets distinct compile layers)
-     and recurses with the same [univ_of] so each direct dep contributes
-     the compile hash for *its* universe in this solution. *)
-  let rec compute_compile_hash ~univ_of (node : build) =
-    let u = univ_of node.pkg in
-    let u_s = Day11_solution.Universe.to_string u in
-    let ck = node.hash ^ "@" ^ u_s in
-    match Hashtbl.find_opt compile_hash_cache ck with
-    | Some h -> h
-    | None ->
-      let blessed = is_blessed_u node.pkg u in
-      let composite_tool_hash = match find_odoc_tool_for_hash node.hash with
-        | Some odoc_tool ->
-          Day11_layer.Hash.of_strings [ driver_tool.hash; odoc_tool.hash ]
-        | None -> "" in
-      (* Include only DIRECT deps' compile hashes. Each direct dep's
-         compile hash transitively encodes its own deps via recursion,
-         so sensitivity to the full transitive closure is preserved
-         without walking the full subtree for every node. Avoids the
-         O(N²) blowup of the previous v2 formulation for large DAGs. *)
-      let dep_compile_hashes =
-        List.map (compute_compile_hash ~univ_of) node.deps in
-      let phase = if needs_split_pkg node then "compile" else "doc-all" in
-      let hash = Day11_layer.Hash.of_strings
-        ([ phase; "v4"; node.hash; u_s; composite_tool_hash;
-           (if blessed then "blessed" else "unblessed") ]
-         @ List.sort String.compare dep_compile_hashes) in
-      Hashtbl.replace compile_hash_cache ck hash;
-      hash
-  in
-  (* Recursive memoised construction. For each [Build.t] [n] we
-     produce its compile/doc-all node (or [None] if non-documentable
-     or no per-compiler odoc tool) by first recursing on [n.deps] —
-     so by the time [n]'s record is built, every direct dep's record
-     already exists with stable references to {e its} deps. OCurrent's
-     [let> deps in body] then chains transitively, so we only need
-     direct deps in [dn.deps], not the full transitive closure.
-
-     The earlier two-pass implementation (initial stub deps + later
-     [patch_doc_deps]) created forward references that a depender
-     patched before its dep would capture by value, leaving stale
-     un-patched records embedded in the dep graph. This recursive
-     construction sidesteps the issue entirely. *)
-  (* [doc_node_cache] is the single store of compile/doc-all doc nodes,
-     keyed by [(build_hash, U)] — one per universe a package appears in.
-     [None] marks a build node with no doc node of its own (so it isn't
-     reprocessed); the link pass and the final node lists are all derived
-     from this one table by filtering the [Some]s. *)
-  let doc_node_cache : (string, doc_node option) Hashtbl.t =
+  (* ── The doc DAG: one recursion ────────────────────────────────
+     For each (build node, universe U) compute the compile-layer hash
+     and — when the package is documentable — its doc node. [univ_of] and
+     [compiler_of] adapt the recursion to its source: a solver solution
+     (U from doc_deps, the solution's single compiler) or a tool build (U
+     from its own closure, compiler derived). The result also carries the
+     *surfaced* doc nodes — itself if it has one, else its deps' — so a
+     non-documentable node passes its descendants' doc layers up to a
+     depender's mount set. Memoised by [(hash, U)]; the compile hash folds
+     U in, and the deps' compile hashes carry the rest of the closure. *)
+  let memo : (string, string * doc_node option * doc_node list) Hashtbl.t =
     Hashtbl.create 1024 in
-  (* When a build node has no doc node of its own (non-OCaml package
-     like [conf-pkg-config], or a node whose compiler has no odoc
-     tool), its descendants may still have doc nodes that need to be
-     reachable from the grandparent. Without this pass-through, a
-     transitively-reachable doc layer like [pcre]'s could end up
-     missing from a depender's OCurrent component graph entirely —
-     OCurrent would never wait for it before firing the compile, and
-     [find_dep_compile_layers] would (correctly) refuse to dispatch
-     because the layer isn't on disk yet. Walk through Nones to
-     surface their downstream doc nodes, deduped by layer hash. *)
-  (* All doc-side tables key on [(build_hash, U)] (string [bh ^ "@" ^ U]):
-     one compile/doc-all/link node per universe a package appears in,
-     not per build node. [univ_of] is the current solution's [pkg -> U]
-     assignment, threaded through the recursion so each dep resolves to
-     its own universe within the same solution. *)
-  let rec collect_dep_doc_nodes ~univ_of (n : build) : doc_node list =
-    match make_doc_node ~univ_of n with
-    | Some dn -> [dn]
-    | None -> List.concat_map (collect_dep_doc_nodes ~univ_of) n.deps
-  and make_doc_node ~univ_of (n : build) : doc_node option =
-    let u = univ_of n.pkg in
+  let rec visit ~univ_of ~compiler_of (n : build)
+    : string * doc_node option * doc_node list =
+    let u = univ_of n in
     let u_s = Day11_solution.Universe.to_string u in
-    let nk = n.hash ^ "@" ^ u_s in
-    match Hashtbl.find_opt doc_node_cache nk with
+    let key = n.hash ^ "@" ^ u_s in
+    match Hashtbl.find_opt memo key with
     | Some r -> r
     | None ->
-      let r =
-        if not (Doc_build.is_ocaml_package n) then None
-        else
-          match find_odoc_tool_for_hash n.hash,
-                find_odoc_final_for_hash n.hash with
+      let dep_results = List.map (visit ~univ_of ~compiler_of) n.deps in
+      (* Mount set: deps' surfaced doc nodes, first-seen order, deduped. *)
+      let doc_deps =
+        let seen = Hashtbl.create 16 in
+        List.concat_map (fun (_, _, surfaced) -> surfaced) dep_results
+        |> List.filter (fun (dn : doc_node) ->
+             if Hashtbl.mem seen dn.layer.hash then false
+             else (Hashtbl.replace seen dn.layer.hash (); true))
+      in
+      let compiler = compiler_of n in
+      let composite_tool_hash =
+        match Option.bind compiler odoc_tool_of_compiler with
+        | Some (odoc_tool : Tool.t) ->
+          Day11_layer.Hash.of_strings [ driver_tool.hash; odoc_tool.hash ]
+        | None -> ""
+      in
+      let blessed = is_blessed_u n.pkg u in
+      let phase = if needs_split_pkg n then "compile" else "doc-all" in
+      let hash = Day11_layer.Hash.of_strings
+        ([ phase; "v4"; n.hash; u_s; composite_tool_hash;
+           (if blessed then "blessed" else "unblessed") ]
+         @ List.sort String.compare
+             (List.map (fun (h, _, _) -> h) dep_results))
+      in
+      let doc_node =
+        match (if Doc_build.is_ocaml_package n then compiler else None) with
+        | None -> None
+        | Some compiler ->
+          match odoc_tool_of_compiler compiler,
+                odoc_final_of_compiler compiler with
           | None, _ | _, None -> None
           | Some odoc_tool, Some odoc_final ->
-            let doc_deps =
-              let seen = Hashtbl.create 16 in
-              List.fold_left (fun acc d ->
-                List.fold_left (fun acc (dn : doc_node) ->
-                  if Hashtbl.mem seen dn.layer.hash then acc
-                  else (Hashtbl.replace seen dn.layer.hash (); dn :: acc)
-                ) acc (collect_dep_doc_nodes ~univ_of d)
-              ) [] n.deps
-              |> List.rev
-            in
-            let hash = compute_compile_hash ~univ_of n in
-            let kind = if needs_split_pkg n then Compile else Doc_all in
             let layer : build =
               { hash; pkg = n.pkg;
                 deps = [ n; driver_final; odoc_final ]
@@ -641,45 +494,62 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
                 universe = Day11_solution.Universe.dummy }
             in
             Some {
-              build_node = n; kind; layer; doc_deps;
-              compile_layer = None;
-              compiler = Hashtbl.find_opt node_compiler n.hash;
-              odoc_tool = Some odoc_tool;
-              universe = u_s;
-              blessed = is_blessed_u n.pkg u;
-            }
+              build_node = n;
+              kind = (if needs_split_pkg n then Compile else Doc_all);
+              layer; doc_deps; compile_layer = None;
+              compiler = Some compiler; odoc_tool = Some odoc_tool;
+              universe = u_s; blessed }
       in
-      Hashtbl.add doc_node_cache nk r;
+      let surfaced = match doc_node with Some dn -> [ dn ] | None -> doc_deps in
+      let r = (hash, doc_node, surfaced) in
+      Hashtbl.add memo key r;
       r
   in
-  (* Solution-driven enumeration: each (solution, pkg) pairs a build node
-     with that package's doc-deps universe in that solution. A build node
-     reached from N universes thus spawns N doc nodes (deduped by
-     [(bh, U)] in [doc_node_cache]). *)
+  (* Drive the recursion from every package of every solution (so a
+     package reachable only via doc-deps still gets a compile node) and
+     from every tool build. The same solution pass records the
+     per-universe doc-dep edges the link walk needs. *)
   List.iter (fun (_target, (result : Day11_solution.Solve_result.t)) ->
     let trans_doc = Day11_solution.Deps.transitive_deps result.doc_deps in
     let trans_build = Day11_solution.Deps.transitive_deps result.build_deps in
-    let univ_of pkg = universe_of ~trans_doc pkg in
+    let univ_pkg pkg =
+      match OpamPackage.Map.find_opt pkg trans_doc with
+      | Some deps -> Day11_solution.Universe.of_deps deps
+      | None -> Day11_solution.Universe.dummy
+    in
+    let resolve pkg =
+      let bh = bh_of ~trans_build pkg in
+      if Hashtbl.mem build_by_hash bh
+      then Some (bh, Day11_solution.Universe.to_string (univ_pkg pkg))
+      else None
+    in
+    OpamPackage.Map.iter (fun pkg direct ->
+      match resolve pkg with
+      | None -> ()
+      | Some (bh, u_s) ->
+        OpamPackage.Set.iter (fun dep ->
+          match resolve dep with
+          | Some (dep_bh, dep_u_s) -> add_dep_edge ~bh ~u_s ~dep_bh ~dep_u_s
+          | None -> ()) direct
+    ) result.doc_deps;
+    let univ_of (n : build) = univ_pkg n.pkg in
+    let compiler = find_compiler result.build_deps in
+    let compiler_of (_ : build) = compiler in
     OpamPackage.Map.iter (fun pkg _ ->
-      match node_of_pkg ~trans_build pkg with
-      | Some n -> ignore (make_doc_node ~univ_of n)
+      match Hashtbl.find_opt build_by_hash (bh_of ~trans_build pkg) with
+      | Some n -> ignore (visit ~univ_of ~compiler_of n)
       | None -> ()
     ) result.doc_deps
   ) solutions;
-  (* Tool nodes don't appear in solutions; document each in the single
-     universe of its own build closure. *)
-  let tool_pkg_univ : (string, Day11_solution.Universe.t) Hashtbl.t =
-    Hashtbl.create 64 in
   List.iter (fun (n : build) ->
-    Hashtbl.replace tool_pkg_univ (OpamPackage.to_string n.pkg)
-      (Day11_solution.Universe.of_deps (node_closure n))) tool_nodes;
-  let tool_univ_of pkg =
-    match Hashtbl.find_opt tool_pkg_univ (OpamPackage.to_string pkg) with
-    | Some u -> u | None -> Day11_solution.Universe.dummy in
-  List.iter (fun n -> ignore (make_doc_node ~univ_of:tool_univ_of n)) tool_nodes;
+    let univ_of (m : build) =
+      Day11_solution.Universe.of_deps (node_closure m) in
+    let compiler_of (m : build) = Hashtbl.find_opt tool_compiler m.hash in
+    ignore (visit ~univ_of ~compiler_of n)
+  ) tool_nodes;
   let compile_docall_doc_nodes =
-    Hashtbl.fold (fun _ r acc -> match r with Some dn -> dn :: acc | None -> acc)
-      doc_node_cache [] in
+    Hashtbl.fold (fun _ (_, dn, _) acc ->
+      match dn with Some dn -> dn :: acc | None -> acc) memo [] in
   (* Link pass: one link node per compile node (a doc-all is already its
      own link). Non-recursive — a link never depends on a link. The mount
      set is the package's *doc-deps* closure (wider than the compile
@@ -711,8 +581,8 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
         let dep_doc_nodes =
           let by_layer = Hashtbl.create 16 in
           Hashtbl.iter (fun k _ ->
-            match Hashtbl.find_opt doc_node_cache k with
-            | Some (Some ddn) ->
+            match Hashtbl.find_opt memo k with
+            | Some (_, Some ddn, _) ->
               if not (Hashtbl.mem by_layer ddn.layer.hash) then
                 Hashtbl.replace by_layer ddn.layer.hash ddn
             | _ -> ()
@@ -781,7 +651,7 @@ let build_internal_plan ~os_dir:_ ~(driver_tool : Tool.t) ~odoc_tools
       Hashtbl.replace meta n.hash {
         build_node = n; kind; layer = n; doc_deps = [];
         compile_layer = None;
-        compiler = Hashtbl.find_opt node_compiler n.hash;
+        compiler = Hashtbl.find_opt tool_compiler n.hash;
         odoc_tool = None;
         universe = "";
         blessed = false;
@@ -934,15 +804,16 @@ let write_universes_if_requested ~snapshot_dir plan =
     | Error (`Msg m) ->
       Printf.eprintf "  warning: failed to write universes: %s\n%!" m
 
-let run ~sw env benv ~np ~os_dir ~html_dir ~(driver_tool : Tool.t)
+let run ~sw env benv ~np ~os_dir ~html_dir ~cache ~base_hash
+    ~(driver_tool : Tool.t)
     ~odoc_tools ~tool_source_dirs ~mounts
     ~run_log
     ~build_one ?(on_pkg_complete = fun _ ~cached:_ ~success:_ -> ())
     ?(on_doc_complete = fun _ ~cached:_ ~blessed:_ ~success:_ -> ())
     ?snapshot_dir
     ~nodes ~solutions ~blessing_maps:_ () =
-  let plan = build_internal_plan ~os_dir ~driver_tool ~odoc_tools
-    ~nodes ~solutions in
+  let plan = build_internal_plan ~os_dir ~cache ~base_hash ~driver_tool
+    ~odoc_tools ~nodes ~solutions in
   Printf.printf "  Doc DAG: %d total nodes\n%!" (List.length plan.all_nodes);
   Day11_lib.Run_log.write_dag_structure run_log plan.all_nodes;
   write_dag_if_requested ~snapshot_dir plan;
@@ -1226,6 +1097,7 @@ let plan_doc_dag ~sw env (ctx : Day11_batch.Profile_ctx.t)
   let html_dir = Fpath.(epoch.Day11_lib.Epoch.dir / "html") in
   ignore (Bos.OS.Dir.create ~path:true html_dir);
   let plan = build_internal_plan ~os_dir:ctx.os_dir
+    ~cache:ctx.hash_cache ~base_hash:ctx.base.hash
     ~driver_tool ~odoc_tools ~nodes ~solutions in
   let dispatch = make_dispatch ctx.benv ~os_dir:ctx.os_dir ~html_dir
     ~plan ~tool_source_dirs:all_source_dirs ~mounts ~build_one in
@@ -1312,6 +1184,7 @@ let build_tools_and_run ~sw env (ctx : Day11_batch.Profile_ctx.t)
   Printf.printf "Running unified build+doc DAG...\n%!";
   let doc_count, doc_html =
     run ~sw env ctx.benv ~np ~os_dir:ctx.os_dir ~html_dir
+      ~cache:ctx.hash_cache ~base_hash:ctx.base.hash
       ~driver_tool ~odoc_tools
       ~tool_source_dirs:all_source_dirs ~mounts
       ~run_log
