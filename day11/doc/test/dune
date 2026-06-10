@@ -3,6 +3,11 @@
  (modules test_doc)
  (libraries day11_doc day11_test_util alcotest bos fpath opam-format yojson))
 
+(test
+ (name test_generate_plan)
+ (libraries day11_doc day11_opam_build day11_opam_layer day11_solution
+            day11_layer alcotest fpath opam-format))
+
 (executable
  (name test_doc_integration)
  (modules test_doc_integration)

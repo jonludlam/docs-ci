@@ -65,6 +65,42 @@ val run :
 
 type node_kind = Build | Tool | Compile | Doc_all | Link
 
+(** {1 Internal planning — exposed for white-box testing}
+
+    [build_internal_plan] is the pure core of doc-DAG construction: given
+    the build nodes and solutions (plus the resolved doc tools) it derives
+    the per-universe compile/doc-all/link nodes, their layer hashes, and
+    each node's blessing. It runs no containers, so it is unit-testable on
+    any platform — see [test/test_generate_plan.ml]. *)
+
+type doc_node = {
+  build_node : Day11_opam_layer.Build.t;
+  kind : node_kind;
+  layer : Day11_opam_layer.Build.t;
+  doc_deps : doc_node list;
+  compile_layer : Day11_opam_layer.Build.t option;
+  compiler : OpamPackage.t option;
+  odoc_tool : Day11_opam_layer.Tool.t option;
+  universe : string;
+  blessed : bool;
+}
+
+type internal_plan = {
+  all_nodes : Day11_opam_layer.Build.t list;
+  meta : (string, doc_node) Hashtbl.t;
+      (** Keyed by each node's own layer hash; the single source of truth
+          for a node's kind, universe and blessing. *)
+  driver_tool : Day11_opam_layer.Tool.t;
+}
+
+val build_internal_plan :
+  os_dir:Fpath.t ->
+  driver_tool:Day11_opam_layer.Tool.t ->
+  odoc_tools:(OpamPackage.t * Day11_opam_layer.Tool.t) list ->
+  nodes:Day11_opam_layer.Build.t list ->
+  solutions:(OpamPackage.t * Day11_solution.Solve_result.t) list ->
+  internal_plan
+
 type doc_plan = {
   all_nodes : Day11_opam_layer.Build.t list;
   (** All nodes in the unified DAG (build + tool + doc). *)
