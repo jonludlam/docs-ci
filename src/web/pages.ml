@@ -68,11 +68,24 @@ let snapshots_base ctx name =
     finished timestamp) or [None] if not cached. Accepts either the
     short (12-char) form or the full 32-char hash — we match on the
     [substr(key,1,N)] prefix for whichever length we got. *)
-let job_db_path = "/home/jjl25/ocaml-docs-ci-oi-sharing/var/db/sqlite.db"
+(* OCurrent keeps its cache db at <state-dir>/var/db/sqlite.db. Resolve
+   it at query time: [DOCS_CI_JOB_DB] wins if set, otherwise pick the
+   first candidate that exists — the container's image WORKDIR
+   ([/var/lib/ocurrent]) then the CWD-relative OCurrent default. Avoids
+   baking in any one deployment's absolute path. *)
+let job_db_path () =
+  match Sys.getenv_opt "DOCS_CI_JOB_DB" with
+  | Some p -> p
+  | None ->
+    let candidates =
+      [ "/var/lib/ocurrent/var/db/sqlite.db"; "var/db/sqlite.db" ] in
+    (try List.find Sys.file_exists candidates
+     with Not_found -> "var/db/sqlite.db")
 
 let job_id_for_hash hash =
   let n = min 12 (String.length hash) in
   let prefix = String.sub hash 0 n in
+  let job_db_path = job_db_path () in
   if not (Sys.file_exists job_db_path) then None
   else
     try
@@ -104,6 +117,7 @@ let job_ids_for_hashes hashes =
   let prefixes = List.filter_map (fun h ->
     if String.length h = 0 then None
     else Some (String.sub h 0 (min 12 (String.length h)))) hashes in
+  let job_db_path = job_db_path () in
   match prefixes with
   | [] -> result
   | _ when not (Sys.file_exists job_db_path) -> result
