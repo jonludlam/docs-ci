@@ -50,6 +50,17 @@ depends: [
   "eio_main"
   "lwt_eio"
   "omigrate" {>= "0.3.2"}
+  "day11"
+  "bos"
+  "fpath"
+  "yojson"
+  "sqlite3"
+  "cohttp-lwt-unix"
+  "mtime"
+  "progress"
+  "routes"
+  "tyxml"
+  "timedesc"
   "odoc" {with-doc}
 ]
 build: [

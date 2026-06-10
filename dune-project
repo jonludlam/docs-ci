@@ -16,7 +16,26 @@
 (package
  (name day11)
  (synopsis "OCaml package build and documentation system")
- (allow_empty))
+ (allow_empty)
+ (depends
+  (ocaml (>= 5.1))
+  (opam-format (>= 2.1.4))
+  (opam-0install (>= 0.4.3))
+  yojson
+  bos
+  fpath
+  rresult
+  (astring (>= 0.8.5))
+  (cmdliner (>= 1.1.0))
+  (dockerfile (>= 8.2.1))
+  (fmt (>= 0.8.9))
+  (logs (>= 0.7.0))
+  (lwt (>= 5.6.1))
+  eio
+  eio_main
+  (git-unix (>= 3.13.0))
+  (ppx_deriving_yojson (>= 3.7.0))
+  (alcotest (and (>= 1.7.0) :with-test))))
 
 (package
  (name ocaml-docs-ci)
@@ -59,7 +78,20 @@
   (prometheus-app (>= 1.2))
   eio_main
   lwt_eio
-  (omigrate (>= 0.3.2))))
+  (omigrate (>= 0.3.2))
+  ; day11 sub-package + libs used directly in src/ that were previously
+  ; only pulled in transitively (so [--only-packages=ocaml-docs-ci] failed).
+  day11
+  bos
+  fpath
+  yojson
+  sqlite3
+  cohttp-lwt-unix
+  mtime
+  progress
+  routes
+  tyxml
+  timedesc))
 
 (package
  (name ocaml-docs-ci-client)
@@ -71,6 +103,7 @@
   (current_rpc (>= 0.6.6))
   (capnp-rpc-unix (>= 1.2))
   dockerfile
+  dune-build-info
   (mdx :with-test)
    ocaml-docs-ci
   (progress (>= 0.2.2))

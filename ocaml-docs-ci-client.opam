@@ -17,6 +17,7 @@ depends: [
   "current_rpc" {>= "0.6.6"}
   "capnp-rpc-unix" {>= "1.2"}
   "dockerfile"
+  "dune-build-info"
   "mdx" {with-test}
   "ocaml-docs-ci"
   "progress" {>= "0.2.2"}
