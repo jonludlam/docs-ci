@@ -6,7 +6,7 @@ type t = {
 (* Manual doc-format version. Bump when day11's doc-generation logic,
    HTML layout, or output convention changes *without* a doc-tool change
    — it's the only input that captures pure-code changes. *)
-let version = "v1"
+let version = "v2"  (* v2: per-universe doc nodes (compile/link per (bh,U)) *)
 
 (* The epoch hash identifies a set of docs all produced by the same doc
    toolchain. It folds in [version] plus the build hashes of the doc

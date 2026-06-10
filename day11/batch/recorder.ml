@@ -118,10 +118,9 @@ let append_doc_outcome t outcome =
   t.doc_outcomes := outcome :: !(t.doc_outcomes);
   Mutex.unlock t.outcomes_lock
 
-let record_doc t (node : Build.t) ~success =
+let record_doc t (node : Build.t) ~blessed ~success =
   ensure_symlink t node;
   let log_file = log_file_for t node in
-  let blessed = is_blessed t node in
   append_history t ~node
     ~status:(if success then "success" else "failure")
     ~category:(if success then "doc_success" else "doc_failure")

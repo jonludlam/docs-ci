@@ -870,6 +870,15 @@ let node_kind_of_plan (plan : internal_plan) (n : build) =
   | Some dn -> dn.kind
   | None -> Build
 
+(* Per-node (per-universe) blessing, looked up by the node's own layer
+   hash. Passed out through [on_doc_complete] so recorders write the
+   real per-universe blessing rather than the package-level approximation
+   (which over-counts once a package is documented in several universes). *)
+let node_blessed_of_plan (plan : internal_plan) (n : build) =
+  match Hashtbl.find_opt plan.meta n.hash with
+  | Some dn -> dn.blessed
+  | None -> false
+
 let dag_entries_of_plan (plan : internal_plan) :
     Day11_lib.Dag_marshal.entry list =
   let convert_kind : node_kind -> Day11_lib.Dag_marshal.kind = function
@@ -946,7 +955,7 @@ let run ~sw env benv ~np ~os_dir ~html_dir ~(driver_tool : Tool.t)
     ~odoc_tools ~tool_source_dirs ~mounts
     ~run_log
     ~build_one ?(on_pkg_complete = fun _ ~cached:_ ~success:_ -> ())
-    ?(on_doc_complete = fun _ ~cached:_ ~success:_ -> ())
+    ?(on_doc_complete = fun _ ~cached:_ ~blessed:_ ~success:_ -> ())
     ?snapshot_dir
     ~nodes ~solutions ~blessing_maps:_ () =
   let plan = build_internal_plan ~os_dir ~driver_tool ~odoc_tools
@@ -986,7 +995,9 @@ let run ~sw env benv ~np ~os_dir ~html_dir ~(driver_tool : Tool.t)
          Fire before the cascade guard so cascaded doc failures still
          get recorded in the summary. *)
       (match kind_tag with
-       | Doc_all | Link -> on_doc_complete node ~cached ~success
+       | Doc_all | Link ->
+         on_doc_complete node ~cached
+           ~blessed:(node_blessed_of_plan plan node) ~success
        | Build | Tool | Compile -> ());
       if Hashtbl.mem doc_cascaded node.hash then ()
       else begin
@@ -1204,7 +1215,7 @@ let resolve_tools ~sw env benv ~packages ~repos ~odoc_repo ~cache
 let plan_doc_dag ~sw env (ctx : Day11_batch.Profile_ctx.t)
     ~mounts ~build_one
     ?(on_pkg_complete = fun _ ~success:_ -> ())
-    ?(on_doc_complete = fun _ ~success:_ -> ())
+    ?(on_doc_complete = fun _ ~blessed:_ ~success:_ -> ())
     ?snapshot_dir
     ~nodes ~solutions ~blessing_maps:_ () =
   (* The profile's [html_dir] is the *base* for epoch dirs. Each doc run
@@ -1245,7 +1256,8 @@ let plan_doc_dag ~sw env (ctx : Day11_batch.Profile_ctx.t)
     let success = dispatch ~sw env node in
     (match kind_of node with
      | Build | Tool -> on_pkg_complete node ~success
-     | Compile | Doc_all | Link -> on_doc_complete node ~success);
+     | Compile | Doc_all | Link ->
+       on_doc_complete node ~blessed:(node_blessed_of_plan plan node) ~success);
     success
   in
   write_dag_if_requested ~snapshot_dir plan;
@@ -1258,7 +1270,7 @@ let plan_doc_dag ~sw env (ctx : Day11_batch.Profile_ctx.t)
 let build_tools_and_run ~sw env (ctx : Day11_batch.Profile_ctx.t)
     ~np ~mounts ~build_one
     ?(on_pkg_complete = fun _ ~cached:_ ~success:_ -> ())
-    ?(on_doc_complete = fun _ ~cached:_ ~success:_ -> ())
+    ?(on_doc_complete = fun _ ~cached:_ ~blessed:_ ~success:_ -> ())
     ?snapshot_dir
     ~run_log
     ~nodes ~solutions ~blessing_maps:_ () =

@@ -379,7 +379,8 @@ let run profile_name profile_dir np cores_per_build overcommit
     let on_pkg_complete node ~cached:_ ~success =
       Day11_batch.Recorder.record_build recorder node ~success
     in
-    let on_doc_complete (node : Day11_opam_layer.Build.t) ~cached:_ ~success =
+    let on_doc_complete (node : Day11_opam_layer.Build.t)
+        ~cached:_ ~blessed ~success =
       let layer_dir = Day11_opam_layer.Build.dir ~os_dir node in
       let log_file =
         let p = Fpath.(layer_dir / "build.log") in
@@ -390,7 +391,7 @@ let run profile_name profile_dir np cores_per_build overcommit
         success;
         layer_hash = node.hash;
         log_file;
-        blessed = Day11_batch.Recorder.is_blessed recorder node;
+        blessed;
       } in
       Mutex.lock doc_outcomes_lock;
       doc_outcomes := outcome :: !doc_outcomes;

@@ -40,11 +40,14 @@ val record_cascade :
     [<os_dir>/layer_status.jsonl]. *)
 
 val record_doc :
-  t -> Day11_opam_layer.Build.t -> success:bool -> unit
+  t -> Day11_opam_layer.Build.t -> blessed:bool -> success:bool -> unit
 (** Record a finished doc-pipeline node (compile / doc-all / link).
     Appends a {!Day11_lib.History.entry} immediately, buffers a
     {!Summary.doc_outcome}, ensures the symlink, and writes a
-    ["doc"]-kind line to the run log. *)
+    ["doc"]-kind line to the run log. [blessed] is the {e per-node}
+    (per-universe) blessing from the plan — not the package-level
+    {!is_blessed}, which would over-count once a package is documented
+    in several universes. *)
 
 val outcomes : t -> Summary.build_outcome list
 (** Current accumulated build outcomes (most recent first). Pass to
