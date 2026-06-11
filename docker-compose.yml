@@ -13,20 +13,12 @@
 # The daemon resolves everything under /home/app (the image's app-user
 # HOME). The whole [.day11] tree lives on a single named volume mounted
 # at /home/app/.day11. The two profiles it runs are baked into the image
-# at /home/app/.day11/profiles by the Dockerfile; a bind-mount there
-# would shadow them, but an empty *named* volume is pre-populated from
-# the image's directory contents (and ownership) on first creation, so
-# the baked-in profiles survive. Everything under .day11 — cache,
+# at /home/app/.day11/profiles by the Dockerfile
+# Everything under .day11 — cache,
 # snapshots, overlays, and scratch (TMPDIR=/home/app/.day11/cache/tmp) —
-# now shares one volume/filesystem, so the daemon's hardlinks (cp --link
+# shares one volume/filesystem, so the daemon's hardlinks (cp --link
 # of dep layers from cache into scratch on Stack.merge) and its cross-dir
 # rename()s all stay within a single mount and just work.
-# The opam-repository mirrors live on named volumes that the daemon
-# clones into on first run, so a fresh checkout needs nothing on the
-# host. The quick profile's mirror is kept inside the day11 volume
-# (.day11/repo/opam-repository) via a relative path in its profile JSON;
-# the --remote target and --github-pin-overlay path are matched to the
-# resolved /home/app paths so the live repo-polling hooks up.
 
 services:
   daemon:
@@ -59,7 +51,7 @@ services:
       # latest version only). The heavier ocaml-odoc-master and oxcaml
       # profiles are still baked into the image (docker/profiles/) but
       # disabled here — add them back to this list to re-enable.
-      - --profiles=quick
+      - --profiles=quick,full
       # All opam-repository mirrors live inside the day11 volume, under
       # .day11/repo/. The clone-target PATHs below are relative, so
       # ocaml-docs-ci resolves them against the .day11 root (the parent
@@ -68,8 +60,6 @@ services:
       # two line up and live repo-polling hooks up. git clone creates the
       # missing [repo/...] parents on first run.
       - --remote=https://github.com/ocaml/opam-repository.git=repo/opam-repository
-      - --remote=https://github.com/jonludlam/opam-repository-oxcaml=repo/oxcaml/opam-repository
-      - --github-pin-overlay=https://github.com/ocaml/odoc=overlays/odoc-master
       - --jobs=40
       - --cores-per-build=4
       - --overcommit=2.5
