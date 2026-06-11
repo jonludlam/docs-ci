@@ -190,6 +190,11 @@ let main () current_config github_auth mode profiles_arg profile_dir_arg
     let routes =
       Routes.[
         (s "login" /? nil) @--> Current_github.Auth.login github_auth;
+        (* Custom index with an about blurb; first match wins, so these
+           shadow the stock Current_web index below. *)
+        (nil @--> (Docs_ci_web.Index_page.r ~engine :> Current_web.Resource.t));
+        (s "index.html" /? nil
+         @--> (Docs_ci_web.Index_page.r ~engine :> Current_web.Resource.t));
       ]
       @ dashboard_routes
       @ Current_web.routes engine
